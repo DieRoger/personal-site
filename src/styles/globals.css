@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  --primary-from: #6366f1;
+  --primary-to: #8b5cf6;
+  --accent: #f472b6;
+  --surface: #ffffff;
+  --text: #1e293b;
+  --muted: #94a3b8;
+}
+
+.dark {
+  --surface: #0f172a;
+  --text: #e2e8f0;
+  --muted: #64748b;
+}
+
+/* A11y: prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: var(--surface);
+  color: var(--text);
+  transition: background-color 0.3s, color 0.3s;
+}
+
+/* 代码块样式 */
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875em;
+}
+
+pre code {
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+/* 渐变动画性能优化 */
+.hero-gradient {
+  will-change: transform;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
