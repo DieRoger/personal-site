@@ -15,7 +15,12 @@ interface PageProps {
 
 export default async function PortfolioPage({ searchParams }: PageProps) {
   const { tag } = await searchParams
-  const projects: any[] = await (client.fetch as any)(PORTFOLIO_QUERY, { tag: tag || '' })
+  let projects: any[] = []
+  try {
+    projects = await (client.fetch as any)(PORTFOLIO_QUERY, { tag: tag || '' })
+  } catch {
+    // Sanity not configured yet
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-16">

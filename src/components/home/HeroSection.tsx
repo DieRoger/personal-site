@@ -1,6 +1,5 @@
-'use client'
-
 import { motion } from 'framer-motion'
+import Link from 'next/link'
 
 export default function HeroSection() {
   return (
@@ -45,18 +44,18 @@ export default function HeroSection() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.4 }}
         >
-          <a
+          <Link
             href="/portfolio"
             className="px-6 py-3 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-medium hover:shadow-lg hover:shadow-indigo-500/25 transition-all"
           >
             查看作品
-          </a>
-          <a
+          </Link>
+          <Link
             href="/about"
             className="px-6 py-3 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-all"
           >
             关于我
-          </a>
+          </Link>
         </motion.div>
       </div>
     </section>

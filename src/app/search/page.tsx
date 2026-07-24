@@ -1,5 +1,6 @@
 'use client'
 
+import { Suspense } from 'react'
 import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { client } from '@/lib/sanity/client'
@@ -9,7 +10,7 @@ import Card from '@/components/shared/Card'
 import TagBadge from '@/components/shared/TagBadge'
 import { FiSearch } from 'react-icons/fi'
 
-export default function SearchPage() {
+function SearchContent() {
   const searchParams = useSearchParams()
   const query = searchParams.get('q') || ''
   const [items, setItems] = useState<SearchItem[]>([])
@@ -62,16 +63,13 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-16">
-      <h1 className="text-3xl font-bold mb-8">搜索</h1>
-
+    <>
       {query && (
         <p className="text-gray-500 dark:text-gray-400 mb-4">
           搜索 &ldquo;{query}&rdquo; 共找到 {results.length} 条结果
         </p>
       )}
 
-      {/* 类型筛选 */}
       {results.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-6">
           {[
@@ -95,7 +93,6 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* 结果 */}
       {loading ? (
         <p className="text-center text-gray-400 py-12">加载中...</p>
       ) : results.length > 0 ? (
@@ -127,6 +124,17 @@ export default function SearchPage() {
           <p className="text-gray-400 mt-4">输入关键词开始搜索</p>
         </div>
       )}
+    </>
+  )
+}
+
+export default function SearchPage() {
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-16">
+      <h1 className="text-3xl font-bold mb-8">搜索</h1>
+      <Suspense fallback={<p className="text-center text-gray-400 py-12">加载中...</p>}>
+        <SearchContent />
+      </Suspense>
     </div>
   )
 }

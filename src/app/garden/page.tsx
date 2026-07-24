@@ -10,7 +10,12 @@ export const metadata: Metadata = {
 export const revalidate = 3600
 
 export default async function GardenPage() {
-  const notes = await client.fetch(CONTENT_LIST_QUERY, { contentType: 'garden' })
+  let notes: any[] = []
+  try {
+    notes = await client.fetch(CONTENT_LIST_QUERY, { contentType: 'garden' })
+  } catch {
+    // Sanity not configured yet
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-16">

@@ -1,6 +1,13 @@
-import { NextStudio } from 'next-sanity/studio'
-import config from '../../../../sanity.config'
+'use client'
+
+import { lazy, Suspense } from 'react'
+
+const Studio = lazy(() => import('./Studio'))
 
 export default function AdminPage() {
-  return <NextStudio config={config} />
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading Studio...</div>}>
+      <Studio />
+    </Suspense>
+  )
 }
