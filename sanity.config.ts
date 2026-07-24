@@ -1,7 +1,7 @@
 import { defineConfig } from 'sanity'
 import { structureTool } from 'sanity/structure'
 import { codeInput } from '@sanity/code-input'
-import { schemaTypes } from './sanity/schema'
+import { schemaTypes, customTypes } from './sanity/schema'
 import { structure } from './sanity/structure'
 
 const projectId = process.env.NEXT_PUBLIC_SANITY_PROJECT_ID!
@@ -14,6 +14,6 @@ export default defineConfig({
   dataset,
   plugins: [structureTool({ structure }), codeInput()],
   schema: {
-    types: schemaTypes,
+    types: [...schemaTypes, ...customTypes],
   },
 })
