@@ -1,0 +1,52 @@
+---
+title: "Paper: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+description: "Lewis et al. (2020) — 提出RAG架构，将预训练模型与检索系统结合，为知识密集型NLP任务提供新范式。"
+date: "2026-03-15"
+tags: ["Paper Reading", "RAG", "Research"]
+source: "paper"
+curatedUrl: "https://arxiv.org/abs/2005.11401"
+---
+
+## Paper Info
+
+- **标题：** Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks
+- **作者：** Lewis et al. (Facebook AI)
+- **年份：** 2020
+- **链接：** [arXiv](https://arxiv.org/abs/2005.11401)
+
+## Problem
+
+LLM 依赖参数化知识，无法动态更新。对于知识密集型任务（如问答、事实验证），模型要么不知道答案，要么给出过时信息。
+
+## Method
+
+提出 **RAG** 架构：将输入序列通过检索系统（Dense Passage Retriever）从知识库中检索相关文档片段，然后将检索结果与输入一起送入生成模型。
+
+### 两种变体：
+
+- **RAG-Sequence** — 用同一个检索结果生成整个输出序列
+- **RAG-Token** — 每个 token 可以检索不同的文档
+
+## Key Results
+
+| Task | 指标 | RAG | 基线 | 提升 |
+|------|------|-----|------|------|
+| Natural Questions | Exact Match | 44.5 | 35.2 | +26% |
+| TriviaQA | Exact Match | 68.0 | 60.5 | +12% |
+
+## My Understanding
+
+这篇论文的核心贡献在于证明了"检索 + 生成"的端到端训练是可行的。Dense Passage Retriever 和 BART 生成器可以联合优化，检索到的文档片段作为条件信息显著提升生成质量。
+
+## Engineering Application
+
+在 **AuditFlow** 中，RAG 架构被用于：
+- 审计证据检索：从历史审计报告中检索相关案例
+- 合规性检查：将法规文档作为知识库，检索相关条款
+- 异常检测：对比当前文档与历史模式的差异
+
+## Related Papers to Read
+
+- REALM (2020) — 类似思路，但使用不同的训练目标
+- ColBERT (2020) — 更高效的检索模型
+- Dense Passage Retriever (2020) — RAG 的检索组件

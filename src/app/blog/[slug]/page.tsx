@@ -42,6 +42,12 @@ export default async function BlogPostPage({ params }: PageProps) {
               <Badge variant="outline" className="text-xs">Curated</Badge>
             </>
           )}
+          {post.source === 'paper' && (
+            <>
+              <span>·</span>
+              <Badge variant="outline" className="text-xs border-blue-500 text-blue-600 dark:text-blue-400">Paper Reading</Badge>
+            </>
+          )}
         </div>
 
         <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-4">{post.title}</h1>

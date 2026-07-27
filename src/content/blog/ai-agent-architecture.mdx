@@ -1,0 +1,59 @@
+---
+title: "AI Agent架构拆解：Planner、Tool、Memory与Evaluation"
+description: "基于Anthropic Engineering Blog的Claude Agent和Prompt Engineering最佳实践，系统梳理Agent架构设计模式。"
+date: "2026-04-20"
+tags: ["AI Agents", "Anthropic", "Prompt Engineering", "Claude"]
+source: "curated"
+curatedUrl: "https://anthropic.com/engineering"
+---
+
+> 来源：Anthropic Engineering Blog — Claude Agent、Prompt Engineering、Context Engineering
+
+## Agent 核心组件
+
+### 1. Planner（规划器）
+
+Agent 的第一步是分解任务。Anthropic 推荐：
+
+- **Chain-of-Thought** — 让模型逐步推理
+- **ReAct 模式** — 思考 → 行动 → 观察循环
+- **Plan-and-Execute** — 先规划完整步骤再执行
+
+### 2. Tool（工具）
+
+工具设计的关键原则：
+
+```python
+tools = [
+    {
+        "name": "search_documents",
+        "description": "搜索文档库中的相关信息",
+        "parameters": {
+            "query": {"type": "string"},
+            "top_k": {"type": "integer"}
+        }
+    }
+]
+```
+
+- 工具描述要清晰具体
+- 参数设计要简单
+- 错误处理要优雅
+
+### 3. Memory（记忆）
+
+- **短期记忆** — 对话上下文窗口
+- **长期记忆** — 外部向量数据库
+- **工作记忆** — 当前任务状态
+
+### 4. Evaluation（评估）
+
+没有评估就没有改进：
+
+- **任务完成率** — Agent 是否成功完成目标
+- **工具调用准确率** — 是否正确选择了工具
+- **响应质量** — 人类评估或 LLM-as-Judge
+
+## 实践建议
+
+Anthropic 的 Context Engineering 方法值得学习：不是让模型"更聪明"，而是给它更好的上下文。这比调参有效得多。

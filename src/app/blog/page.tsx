@@ -30,6 +30,9 @@ export default function BlogPage() {
                   {post.source === 'curated' && (
                     <Badge variant="outline" className="text-[10px] px-1.5 py-0">Curated</Badge>
                   )}
+                  {post.source === 'paper' && (
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-500 text-blue-600 dark:text-blue-400">Paper</Badge>
+                  )}
                 </div>
                 <span className="text-xs text-muted-foreground">{post.readingTime}</span>
               </div>
@@ -55,13 +58,19 @@ export default function BlogPage() {
                 ))}
               </div>
               <div className="mt-auto">
-                {post.source === 'original' && (
+                {post.source === 'original' || post.source === 'paper' ? (
                   <Button variant="ghost" size="sm" className="px-0" asChild>
                     <Link href={`/blog/${post.slug}`}>
                       Read more <ArrowRight className="ml-1 h-3.5 w-3.5" />
                     </Link>
                   </Button>
-                )}
+                ) : post.curatedUrl ? (
+                  <Button variant="ghost" size="sm" className="px-0" asChild>
+                    <a href={post.curatedUrl} target="_blank" rel="noopener noreferrer">
+                      View source <ExternalLink className="ml-1 h-3.5 w-3.5" />
+                    </a>
+                  </Button>
+                ) : null}
               </div>
             </CardContent>
           </Card>

@@ -5,7 +5,7 @@ export interface BlogPost {
   date: string
   tags: string[]
   readingTime: string
-  source?: 'original' | 'curated'
+  source?: 'original' | 'curated' | 'paper'
   curatedUrl?: string
 }
 
