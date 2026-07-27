@@ -1,0 +1,50 @@
+---
+title: "Understanding RAG Pipelines: From Chunking to Generation"
+description: "A deep dive into Retrieval-Augmented Generation, covering chunking strategies, embedding models, and generation techniques."
+date: "2026-05-20"
+tags: ["RAG", "LLM", "Embedding", "Vector Search"]
+---
+
+## What is RAG?
+
+Retrieval-Augmented Generation (RAG) is a technique that enhances LLM outputs by first retrieving relevant information from a knowledge base, then feeding that context to the model for generation.
+
+## The Pipeline
+
+### 1. Chunking
+
+The quality of a RAG system starts with how you split documents. Common strategies:
+
+- **Fixed-size chunks** — Simple but loses semantic boundaries
+- **Semantic chunking** — Splits at paragraph/section breaks
+- **Agentic chunking** — Uses LLM to determine optimal split points
+
+### 2. Embedding
+
+Chunks are converted to vector embeddings using models like:
+
+- `text-embedding-3-small` (OpenAI)
+- `BAAI/bge-small-en-v1.5` (open-source)
+- Local models via `fastembed`
+
+### 3. Retrieval
+
+```python
+# Hybrid search combining dense and sparse retrieval
+results = index.hybrid_search(
+    query="audit compliance requirements",
+    alpha=0.5,  # balance between dense and sparse
+    top_k=10
+)
+```
+
+### 4. Generation
+
+The retrieved context is injected into the LLM prompt alongside the user's question. The key is crafting a prompt that helps the model use only the provided context.
+
+## Advanced Techniques
+
+- **Hybrid search** — Combines semantic + keyword search
+- **Re-ranking** — A second pass to improve result quality
+- **Query transformation** — Rewriting queries for better retrieval
+- **Multi-hop RAG** — Breaking complex questions into sub-queries
