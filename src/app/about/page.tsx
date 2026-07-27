@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { FadeIn, StaggerContainer, StaggerItem } from '@/components/ui/fade-in'
 import { skillGroups, interests } from '@/data/skills'
 
 export const metadata: Metadata = {
@@ -11,6 +12,7 @@ export default function AboutPage() {
   return (
     <div className="container mx-auto max-w-4xl px-4 py-16">
       {/* Hero */}
+      <FadeIn>
       <section className="mb-16">
         <h1 className="text-3xl font-bold tracking-tight mb-4">About Runjie Luo</h1>
         <div className="prose prose-neutral dark:prose-invert max-w-none">
@@ -24,8 +26,10 @@ export default function AboutPage() {
           </p>
         </div>
       </section>
+      </FadeIn>
 
       {/* Timeline */}
+      <FadeIn delay={0.1}>
       <section className="mb-16">
         <h2 className="text-2xl font-semibold tracking-tight mb-6">Timeline</h2>
         <div className="space-y-8">
@@ -63,8 +67,10 @@ export default function AboutPage() {
           </div>
         </div>
       </section>
+      </FadeIn>
 
       {/* Interests */}
+      <FadeIn delay={0.2}>
       <section className="mb-16">
         <h2 className="text-2xl font-semibold tracking-tight mb-6">Interests</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -80,8 +86,10 @@ export default function AboutPage() {
           ))}
         </div>
       </section>
+      </FadeIn>
 
       {/* Skills */}
+      <FadeIn delay={0.3}>
       <section>
         <h2 className="text-2xl font-semibold tracking-tight mb-6">Skills</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -99,6 +107,7 @@ export default function AboutPage() {
           ))}
         </div>
       </section>
+      </FadeIn>
     </div>
   )
 }

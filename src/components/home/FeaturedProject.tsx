@@ -1,11 +1,11 @@
 'use client'
 
-import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { ArrowRight, GitBranch, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { FadeIn } from '@/components/ui/fade-in'
 import { projects } from '@/data/projects'
 
 export default function FeaturedProject() {
@@ -16,12 +16,8 @@ export default function FeaturedProject() {
     <section className="py-16 bg-secondary/30">
       <div className="container mx-auto max-w-5xl px-4">
         <h2 className="text-2xl font-semibold tracking-tight mb-8">Featured Project</h2>
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-        >
-          <Card className="overflow-hidden">
+        <FadeIn>
+          <Card className="overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:shadow-lg">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -62,7 +58,7 @@ export default function FeaturedProject() {
               </div>
             </CardContent>
           </Card>
-        </motion.div>
+        </FadeIn>
       </div>
     </section>
   )

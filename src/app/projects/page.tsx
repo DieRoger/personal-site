@@ -4,6 +4,7 @@ import { ArrowRight, GitBranch, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { FadeIn, StaggerContainer, StaggerItem } from '@/components/ui/fade-in'
 import { projects } from '@/data/projects'
 
 export const metadata: Metadata = {
@@ -14,13 +15,16 @@ export default function ProjectsPage() {
   return (
     <div className="container mx-auto max-w-5xl px-4 py-16">
       <h1 className="text-3xl font-bold tracking-tight mb-2">Projects</h1>
-      <p className="text-muted-foreground mb-10">
+      <FadeIn>
+        <p className="text-muted-foreground mb-10">
         Production-level AI systems built with modern software engineering practices.
       </p>
+      </FadeIn>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <StaggerContainer className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {projects.map((project) => (
-          <Card key={project.slug} className="flex flex-col">
+          <StaggerItem key={project.slug}>
+          <Card className="flex flex-col transition-all duration-300 hover:-translate-y-1 hover:shadow-lg">
             <CardHeader>
               <div className="flex items-start justify-between">
                 <div className="flex-1">
@@ -65,8 +69,9 @@ export default function ProjectsPage() {
               </div>
             </CardContent>
           </Card>
+          </StaggerItem>
         ))}
-      </div>
+      </StaggerContainer>
     </div>
   )
 }
