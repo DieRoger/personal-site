@@ -1,36 +1,21 @@
 'use client'
 
-import { useState } from 'react'
-
-// 在模块作用域中读取主题，不需要 effect
-function getInitialTheme(): boolean {
-  if (typeof window === 'undefined') return false
-  const saved = localStorage.getItem('theme')
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  const isDark = saved ? saved === 'dark' : prefersDark
-  if (isDark) {
-    document.documentElement.classList.add('dark')
-  }
-  return isDark
-}
+import { Moon, Sun } from 'lucide-react'
+import { useTheme } from 'next-themes'
+import { Button } from '@/components/ui/button'
 
 export default function ThemeToggle() {
-  const [dark, setDark] = useState(getInitialTheme)
-
-  const toggle = () => {
-    const next = !dark
-    setDark(next)
-    document.documentElement.classList.toggle('dark', next)
-    localStorage.setItem('theme', next ? 'dark' : 'light')
-  }
+  const { theme, setTheme } = useTheme()
 
   return (
-    <button
-      onClick={toggle}
-      className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-      aria-label={dark ? '切换亮色模式' : '切换暗色模式'}
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      aria-label="Toggle theme"
     >
-      {dark ? '🌙' : '☀️'}
-    </button>
+      <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+      <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+    </Button>
   )
 }

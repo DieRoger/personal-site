@@ -1,51 +1,104 @@
 import type { Metadata } from 'next'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { skillGroups, interests } from '@/data/skills'
 
 export const metadata: Metadata = {
-  title: '关于',
+  title: 'About',
 }
 
 export default function AboutPage() {
   return (
-    <div className="max-w-3xl mx-auto px-4 py-20">
-      <h1 className="text-3xl font-bold mb-8">关于我</h1>
-
-      <div className="prose dark:prose-invert max-w-none space-y-6">
-        <section>
-          <h2 className="text-xl font-semibold mb-3">简介</h2>
-          <p className="text-gray-600 dark:text-gray-300">
-            全栈开发者，专注于构建优雅的 Web 应用。
-            热爱开源，喜欢探索新技术，也乐于分享知识与经验。
+    <div className="container mx-auto max-w-4xl px-4 py-16">
+      {/* Hero */}
+      <section className="mb-16">
+        <h1 className="text-3xl font-bold tracking-tight mb-4">About Runjie Luo</h1>
+        <div className="prose prose-neutral dark:prose-invert max-w-none">
+          <p className="text-lg text-muted-foreground leading-relaxed">
+            Hi, I&apos;m Runjie Luo. I am a Data Science undergraduate passionate about
+            Artificial Intelligence and Software Engineering.
           </p>
-        </section>
+          <p className="text-muted-foreground leading-relaxed">
+            I enjoy building production-level AI systems using LLMs, Retrieval-Augmented Generation,
+            Agentic Workflows and Modern Backend Technologies.
+          </p>
+        </div>
+      </section>
 
-        <section>
-          <h2 className="text-xl font-semibold mb-3">技能</h2>
-          <ul className="list-disc list-inside text-gray-600 dark:text-gray-300 space-y-1">
-            <li>前端：React, Next.js, TypeScript, TailwindCSS</li>
-            <li>后端：Node.js, Python, PostgreSQL</li>
-            <li>工具：Docker, Git, CI/CD</li>
-            <li>设计：Figma, 响应式设计, 无障碍</li>
-          </ul>
-        </section>
+      {/* Timeline */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold tracking-tight mb-6">Timeline</h2>
+        <div className="space-y-8">
+          <div>
+            <h3 className="text-lg font-medium mb-3">Education</h3>
+            <div className="border-l-2 border-border pl-4 space-y-4">
+              <div>
+                <p className="font-medium">B.S. in Data Science</p>
+                <p className="text-sm text-muted-foreground">University — Present</p>
+              </div>
+            </div>
+          </div>
+          <div>
+            <h3 className="text-lg font-medium mb-3">Projects</h3>
+            <div className="border-l-2 border-border pl-4 space-y-4">
+              <div>
+                <p className="font-medium">AuditFlow</p>
+                <p className="text-sm text-muted-foreground">AI-powered Document Intelligence Platform</p>
+              </div>
+              <div>
+                <p className="font-medium">Job Hunter</p>
+                <p className="text-sm text-muted-foreground">Automated Job Search & Application Platform</p>
+              </div>
+              <div>
+                <p className="font-medium">Financial Analysis System</p>
+                <p className="text-sm text-muted-foreground">Automated Financial Document Analysis</p>
+              </div>
+            </div>
+          </div>
+          <div>
+            <h3 className="text-lg font-medium mb-3">Future Goals</h3>
+            <p className="text-sm text-muted-foreground">
+              Pursuing graduate studies in AI/ML to deepen research in LLM applications and multi-agent systems.
+            </p>
+          </div>
+        </div>
+      </section>
 
-        <section>
-          <h2 className="text-xl font-semibold mb-3">联系方式</h2>
-          <ul className="space-y-2 text-gray-600 dark:text-gray-300">
-            <li>
-              GitHub：{' '}
-              <a href="#" className="text-indigo-500 hover:text-indigo-600">
-                github.com/username
-              </a>
-            </li>
-            <li>
-              邮箱：{' '}
-              <a href="mailto:hello@example.com" className="text-indigo-500 hover:text-indigo-600">
-                hello@example.com
-              </a>
-            </li>
-          </ul>
-        </section>
-      </div>
+      {/* Interests */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold tracking-tight mb-6">Interests</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {interests.map((interest) => (
+            <Card key={interest.title}>
+              <CardHeader>
+                <CardTitle className="text-sm">{interest.title}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-muted-foreground">{interest.description}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* Skills */}
+      <section>
+        <h2 className="text-2xl font-semibold tracking-tight mb-6">Skills</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {skillGroups.map((group) => (
+            <div key={group.category}>
+              <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
+                {group.category}
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {group.skills.map((skill) => (
+                  <Badge key={skill} variant="outline">{skill}</Badge>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   )
 }

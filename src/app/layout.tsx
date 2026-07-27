@@ -1,4 +1,6 @@
 import type { Metadata } from 'next'
+import { GeistSans, GeistMono } from 'geist/font'
+import { ThemeProvider } from 'next-themes'
 import { SITE_CONFIG } from '@/lib/constants'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
@@ -6,15 +8,15 @@ import '@/styles/globals.css'
 
 export const metadata: Metadata = {
   title: {
-    default: SITE_CONFIG.name,
-    template: `%s | ${SITE_CONFIG.name}`,
+    default: 'Runjie Luo',
+    template: `%s — Runjie Luo`,
   },
-  description: SITE_CONFIG.description,
+  description: 'AI Engineer Portfolio — Building production-level AI systems with LLMs, Agents, and modern software engineering.',
   metadataBase: new URL(SITE_CONFIG.url),
   openGraph: {
-    title: SITE_CONFIG.name,
-    description: SITE_CONFIG.description,
-    locale: SITE_CONFIG.locale,
+    title: 'Runjie Luo',
+    description: 'AI Engineer Portfolio',
+    locale: 'en_US',
     type: 'website',
   },
 }
@@ -25,31 +27,20 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang={SITE_CONFIG.locale} suppressHydrationWarning>
-      <head>
-        {/* 防止 FOUC：加载时设置主题 */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                try {
-                  var theme = localStorage.getItem('theme');
-                  var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                  if (theme === 'dark' || (!theme && prefersDark)) {
-                    document.documentElement.classList.add('dark');
-                  }
-                } catch(e) {}
-              })();
-            `,
-          }}
-        />
-      </head>
-      <body className="antialiased min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1">
-          {children}
-        </main>
-        <Footer />
+    <html lang="en" suppressHydrationWarning>
+      <body className={`${GeistSans.variable} ${GeistMono.variable} antialiased min-h-screen flex flex-col`}>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <Header />
+          <main className="flex-1">
+            {children}
+          </main>
+          <Footer />
+        </ThemeProvider>
       </body>
     </html>
   )
