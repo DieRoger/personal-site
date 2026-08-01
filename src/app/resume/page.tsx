@@ -12,34 +12,61 @@ export const metadata: Metadata = {
 const SKILL_GROUPS = [
   { category: 'Programming', items: ['Python', 'Java', 'TypeScript', 'SQL'] },
   {
-    category: 'AI / ML',
+    category: 'Data Science & ML',
     items: [
+      'Data Analysis',
+      'Statistical Modeling',
+      'Feature Engineering',
+      'Data Preprocessing',
+      'Exploratory Data Analysis (EDA)',
+      'Machine Learning Algorithms',
+      'Model Evaluation',
+      'Pandas',
+      'NumPy',
+      'Scikit-learn',
       'PyTorch',
+    ],
+  },
+  {
+    category: 'AI Systems',
+    items: [
       'Large Language Models (LLMs)',
       'Retrieval-Augmented Generation (RAG)',
       'AI Agents',
       'LangGraph',
       'Vector Search',
-      'Model Evaluation',
+      'Embedding Models',
+      'Agent Evaluation',
     ],
   },
   {
     category: 'Backend',
-    items: ['FastAPI', 'PostgreSQL', 'Redis', 'Docker', 'Nginx', 'Linux', 'Git', 'CI/CD'],
+    items: ['FastAPI', 'PostgreSQL', 'Redis', 'Docker', 'Linux', 'Git', 'CI/CD'],
   },
 ]
 
 const PROJECTS = [
   {
     name: 'AuditFlow',
-    tagline: 'AI-powered Audit Intelligence & Document Analysis Platform',
+    tagline: 'AI-powered Audit Intelligence Platform',
     description:
-      'An AI system exploring reliable agent workflows through document intelligence, retrieval-augmented generation, evidence grounding, and workflow observability.',
+      'Built an AI system for automated financial document analysis, combining data processing, retrieval systems, and multi-agent workflows.',
     areas: [
-      'Multi-agent workflow design',
-      'RAG pipeline development',
-      'Evidence-based AI decision support',
-      'Agent evaluation and reliability analysis',
+      'Designed document processing pipelines for structured and unstructured data.',
+      'Developed RAG-based knowledge retrieval and evidence grounding mechanisms.',
+      'Built evaluation workflows to measure agent reliability and system performance.',
+      'Implemented data modeling and storage layers using PostgreSQL.',
+    ],
+  },
+  {
+    name: 'Financial Analysis System',
+    tagline: 'Data-driven Financial Document Analysis Platform',
+    description:
+      'Developed a data analysis pipeline for extracting, processing, and analyzing financial information.',
+    areas: [
+      'Applied data preprocessing and statistical analysis techniques.',
+      'Built automated workflows for financial data extraction.',
+      'Generated analytical insights from structured and unstructured financial data.',
     ],
   },
   {
@@ -52,6 +79,16 @@ const PROJECTS = [
       'Knowledge organization',
       'Prompt-driven automation',
       'Personal productivity systems',
+    ],
+  },
+  {
+    name: 'Machine Learning Experiments',
+    tagline: 'Regression Modeling on Healthcare and Housing Datasets',
+    description:
+      'Implemented regression models including Linear Regression and Kernel Ridge Regression.',
+    areas: [
+      'Compared model performance using MSE and R² metrics.',
+      'Conducted data preprocessing and model evaluation experiments.',
     ],
   },
 ]
@@ -103,7 +140,7 @@ export default function ResumePage() {
           <section>
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2">Education</h3>
             <div>
-              <p className="font-medium">B.S. in Data Science</p>
+              <p className="font-medium">B.S. in Data Science and Big Data Technology</p>
               <p className="text-sm text-muted-foreground">University — Present</p>
             </div>
           </section>
@@ -114,7 +151,7 @@ export default function ResumePage() {
             <div className="space-y-2.5">
               {SKILL_GROUPS.map((group) => (
                 <div key={group.category} className="flex gap-3">
-                  <span className="text-xs font-medium text-muted-foreground w-24 shrink-0 pt-0.5">
+                  <span className="text-xs font-medium text-muted-foreground w-32 shrink-0 pt-0.5">
                     {group.category}
                   </span>
                   <div className="flex flex-wrap gap-1.5">
@@ -122,6 +159,24 @@ export default function ResumePage() {
                       <Badge key={skill} variant="secondary" className="text-xs">{skill}</Badge>
                     ))}
                   </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Experience */}
+          <section>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Experience</h3>
+            <div className="space-y-4">
+              {EXPERIENCE.map((job) => (
+                <div key={job.title}>
+                  <p className="font-medium">{job.title}</p>
+                  <p className="text-sm text-muted-foreground mb-1">{job.company}</p>
+                  <ul className="list-disc list-inside text-sm text-muted-foreground space-y-0.5">
+                    {job.points.map((point) => (
+                      <li key={point}>{point}</li>
+                    ))}
+                  </ul>
                 </div>
               ))}
             </div>
@@ -146,22 +201,17 @@ export default function ResumePage() {
             </div>
           </section>
 
-          {/* Experience */}
+          {/* Research / Writing */}
           <section>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Experience</h3>
-            <div className="space-y-4">
-              {EXPERIENCE.map((job) => (
-                <div key={job.title}>
-                  <p className="font-medium">{job.title}</p>
-                  <p className="text-sm text-muted-foreground mb-1">{job.company}</p>
-                  <ul className="list-disc list-inside text-sm text-muted-foreground space-y-0.5">
-                    {job.points.map((point) => (
-                      <li key={point}>{point}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2">Research / Writing</h3>
+            <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+              <li>
+                <Link href="/blog" className="text-primary hover:underline">
+                  Code Archaeology of AI Systems
+                </Link>{' '}
+                — Engineering investigations into why AI systems drift from their design (Parts 1–5).
+              </li>
+            </ul>
           </section>
 
           {/* Awards */}
