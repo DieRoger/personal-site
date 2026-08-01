@@ -1,6 +1,6 @@
 ---
-title: "I Expected a next_action Chain. The Workflow Engine Had a DAG 鈥?and a Condition Nobody Evaluates."
-description: "Code Archaeology Part 2 鈥?A DAG That Never Branches: I trusted one agent's return value and wrote a wrong article. Reading workflows/models.py and engine.py revealed a real DAG, token budgets, and a conditional-edge feature that is declared, but not executed."
+title: "I Expected a next_action Chain. The Workflow Engine Had a DAG —?and a Condition Nobody Evaluates."
+description: "Code Archaeology Part 2 —?A DAG That Never Branches: I trusted one agent's return value and wrote a wrong article. Reading workflows/models.py and engine.py revealed a real DAG, token budgets, and a conditional-edge feature that is declared, but not executed."
 date: "2026-06-27"
 readingTime: "15 min"
 source: original
@@ -11,19 +11,19 @@ finding: "Edge.condition is defined and documented but never evaluated — the D
 tags: ["Code Archaeology", "AI Agents", "Workflow", "DAG", "Engineering"]
 ---
 
-# I Expected a next_action Chain. The Workflow Engine Had a DAG 鈥?and a Condition Nobody Evaluates.
+# I Expected a next_action Chain. The Workflow Engine Had a DAG —?and a Condition Nobody Evaluates.
 
-*This is the second engineering investigation in the series. The first one taught me that a hardcoded `document_id` can make an AI system look evidence-driven without being it. This one taught me something dumber: I wrote an entire article about how AuditFlow orchestrates agents 鈥?without reading the orchestration code. This article is the correction, and it contains a discovery the docs never mention.*
+*This is the second engineering investigation in the series. The first one taught me that a hardcoded `document_id` can make an AI system look evidence-driven without being it. This one taught me something dumber: I wrote an entire article about how AuditFlow orchestrates agents —?without reading the orchestration code. This article is the correction, and it contains a discovery the docs never mention.*
 
 ## The Hook
 
-The Evidence Agent's return value said `next_action="REVIEWER_AGENT"`. I wrote a whole article claiming AuditFlow's orchestration was a linear `next_action` chain 鈥?one agent hands off to the next, no graph, no branching.
+The Evidence Agent's return value said `next_action="REVIEWER_AGENT"`. I wrote a whole article claiming AuditFlow's orchestration was a linear `next_action` chain —?one agent hands off to the next, no graph, no branching.
 
 The article was wrong in both directions. `workflows/models.py` defines a real DAG: `GraphDefinition` with nodes, edges, an entry point, and terminal nodes. `workflows/engine.py` enforces token budgets and timeouts at runtime. And buried in the engine's topological sort is a discovery neither the docs nor my wrong article mention: the graph declares conditional edges, but **the engine never evaluates a single condition.** Every node runs, unconditionally, in topological order.
 
 *Declared, but not executed.* That's the pattern this series keeps uncovering.
 
-Let me show you how I got there 鈥?including the wrong turns, because that's where the trust comes from.
+Let me show you how I got there —?including the wrong turns, because that's where the trust comes from.
 
 ## The Expectation
 
@@ -33,9 +33,9 @@ I started from the evidence agent's return value. It carries `next_action="REVIE
 planner 鈫?risk 鈫?evidence 鈫?reviewer
 ```
 
-Each agent looks at the previous one's output and decides where to go next. That's the model I described in the (wrong) first version of this article. It's a reasonable model 鈥?it's how a lot of naive multi-agent systems work, and the `next_action` field makes it look like the system was designed that way.
+Each agent looks at the previous one's output and decides where to go next. That's the model I described in the (wrong) first version of this article. It's a reasonable model —?it's how a lot of naive multi-agent systems work, and the `next_action` field makes it look like the system was designed that way.
 
-The handover doc complicated this. It claimed the workflow layer has "DAG + checkpoint + token budget." I read that as aspirational 鈥?a target architecture, like the evidence-chain diagram that lied to me in the first investigation. Two sources, two stories: the agent's return value says chain, the doc says DAG. I trusted the agent, because I had *seen* it return `next_action`. The doc, I reasoned, was probably describing intent.
+The handover doc complicated this. It claimed the workflow layer has "DAG + checkpoint + token budget." I read that as aspirational —?a target architecture, like the evidence-chain diagram that lied to me in the first investigation. Two sources, two stories: the agent's return value says chain, the doc says DAG. I trusted the agent, because I had *seen* it return `next_action`. The doc, I reasoned, was probably describing intent.
 
 That reasoning was backwards. The agent's return value is runtime data; the orchestration model is a file I hadn't opened.
 
@@ -53,7 +53,7 @@ I started by listing what the doc promised, so I could check each one against co
 
 That's a concrete checklist. Much better than the vague "let me see what the engine does" I might have defaulted to. The doc, whatever its other sins, at least enumerated testable claims.
 
-**Conclusion:** The doc makes five testable claims 鈥?including conditional edges. Now the question is whether the code honors them.
+**Conclusion:** The doc makes five testable claims —?including conditional edges. Now the question is whether the code honors them.
 
 ### Search #2: The Data Model
 
@@ -67,9 +67,9 @@ class GraphDefinition(BaseModel):
     end_nodes: list[str] = Field(default_factory=list)
 ```
 
-`AgentNode` has `input_mapping` 鈥?a declaration of which upstream outputs become this node's inputs. That's context scoping: the risk agent sees only what the planner produced, not the entire conversation history. `Edge` has a `condition` field, documented with an example: `"risk.level == HIGH 鈫?approval"`. So claim #1 (DAG) and #2 (conditional edges) both check out at the model level.
+`AgentNode` has `input_mapping` —?a declaration of which upstream outputs become this node's inputs. That's context scoping: the risk agent sees only what the planner produced, not the entire conversation history. `Edge` has a `condition` field, documented with an example: `"risk.level == HIGH 鈫?approval"`. So claim #1 (DAG) and #2 (conditional edges) both check out at the model level.
 
-The state machine is also there 鈥?`WorkflowState` with eight statuses, including `WAITING_APPROVAL` and `RETRYING`. And `ApprovalDecision` has three decisions: `APPROVED`, `REJECTED`, `MODIFY`. The modify option is the interesting one 鈥?it means a human can correct the inputs and re-run, which is how audits actually work. Claim #3 checks out.
+The state machine is also there —?`WorkflowState` with eight statuses, including `WAITING_APPROVAL` and `RETRYING`. And `ApprovalDecision` has three decisions: `APPROVED`, `REJECTED`, `MODIFY`. The modify option is the interesting one —?it means a human can correct the inputs and re-run, which is how audits actually work. Claim #3 checks out.
 
 **Conclusion:** The model layer supports everything the doc promised: DAG, conditional edges, approval gates. The data model is not the problem.
 
@@ -94,7 +94,7 @@ Trace and checkpoint: real. Every step appends an `ExecutionTrace` (workflow_id,
 
 So the doc was right about everything. And I had written an article claiming the opposite. The gap between what I wrote and what the code does is the whole point of this series.
 
-**Conclusion:** The runtime enforces budgets, timeouts, traces, and checkpoints 鈥?but I haven't yet found where conditions are evaluated. That's the next search.
+**Conclusion:** The runtime enforces budgets, timeouts, traces, and checkpoints —?but I haven't yet found where conditions are evaluated. That's the next search.
 
 ### What the Topological Sort Actually Does
 
@@ -110,39 +110,39 @@ def _topological_order(self, graph: GraphDefinition) -> list[AgentNode]:
     ...
 ```
 
-Read that carefully. The `Edge.condition` field 鈥?the one documented as `"risk.level == HIGH 鈫?approval"` 鈥?is **never read** by the engine. Not in `_topological_order`. Not in `_execute_node`. Not in `run()`. The graph's branching is declared but not executed: every node in the topological order runs, unconditionally, in sequence.
+Read that carefully. The `Edge.condition` field —?the one documented as `"risk.level == HIGH 鈫?approval"` —?is **never read** by the engine. Not in `_topological_order`. Not in `_execute_node`. Not in `run()`. The graph's branching is declared but not executed: every node in the topological order runs, unconditionally, in sequence.
 
 Let me be precise about what this means, because it's easy to overstate:
 
 - The **model** supports conditional edges. `Edge.condition` exists, is typed, is documented.
 - The **engine** executes a topological sort that ignores conditions. A high-risk engagement and a low-risk engagement run the *same* node sequence.
-- The `next_action` field on agent responses is **also** never consumed by the engine 鈥?it's returned to the caller as data, but `run()` doesn't use it to route.
+- The `next_action` field on agent responses is **also** never consumed by the engine —?it's returned to the caller as data, but `run()` doesn't use it to route.
 
-So the two descriptions I flip-flopped between 鈥?"chain" and "DAG with conditions" 鈥?are both half-right. It's a DAG, but executed as a chain: topological order, no runtime branching. The conditional edges and `next_action` are the *declared* design; the topological sort is the *actual* execution. That's a third description, and it's the one the code supports.
+So the two descriptions I flip-flopped between —?"chain" and "DAG with conditions" —?are both half-right. It's a DAG, but executed as a chain: topological order, no runtime branching. The conditional edges and `next_action` are the *declared* design; the topological sort is the *actual* execution. That's a third description, and it's the one the code supports.
 
-The approval path is the one place the state machine genuinely branches 鈥?`request_approval` transitions to `WAITING_APPROVAL`, and `submit_decision` resumes on `APPROVED` / `REJECTED` / `MODIFY`. But notice: even `REJECTED` just clears `agent_results` and sets status back to `RUNNING` 鈥?it doesn't re-route the graph. The human can reset, but the topology stays the same.
+The approval path is the one place the state machine genuinely branches —?`request_approval` transitions to `WAITING_APPROVAL`, and `submit_decision` resumes on `APPROVED` / `REJECTED` / `MODIFY`. But notice: even `REJECTED` just clears `agent_results` and sets status back to `RUNNING` —?it doesn't re-route the graph. The human can reset, but the topology stays the same.
 
 ## The Discovery
 
-The real finding isn't "the doc was right" 鈥?it's the **gap between declared branching and executed linearity**. The engine has:
+The real finding isn't "the doc was right" —?it's the **gap between declared branching and executed linearity**. The engine has:
 
 - a condition field that is never evaluated
 - a `next_action` field that is never consumed
 - an approval decision that resets state but not topology
 
-All three are *designed* for dynamic orchestration. None of them *drive* execution today. The engine is honest about this in a subtle way: `_topological_order` is a linear pass, and the docstring on `GraphDefinition` says "瀹屾暣鐨?Workflow Graph 瀹氫箟" 鈥?a complete graph *definition*. The execution layer just isn't there yet.
+All three are *designed* for dynamic orchestration. None of them *drive* execution today. The engine is honest about this in a subtle way: `_topological_order` is a linear pass, and the docstring on `GraphDefinition` says "瀹屾暣鐨?Workflow Graph 瀹氫箟" —?a complete graph *definition*. The execution layer just isn't there yet.
 
-Why does this matter for an audit system? Because dynamic routing is where workflow value lives. A fixed pipeline is a script 鈥?you could write it as five sequential function calls. The conditional edge `"risk.level == HIGH 鈫?approval"` is what turns a script into a *workflow*: the graph reacts to runtime state. Right now, AuditFlow's engine runs every node for every engagement. The branching logic is designed, declared, and documented 鈥?and dead in the execution path.
+Why does this matter for an audit system? Because dynamic routing is where workflow value lives. A fixed pipeline is a script —?you could write it as five sequential function calls. The conditional edge `"risk.level == HIGH 鈫?approval"` is what turns a script into a *workflow*: the graph reacts to runtime state. Right now, AuditFlow's engine runs every node for every engagement. The branching logic is designed, declared, and documented —?and dead in the execution path.
 
-That's a different failure mode than the first investigation's hardcoded citation. There, the system *pretended* to be grounded and wasn't. Here, the system *declares* branching and executes linearity 鈥?which is almost more dangerous, because the model layer makes the feature look done. If you read only `models.py`, you'd conclude conditional workflows exist. You have to read `engine.py` to see they don't run.
+That's a different failure mode than the first investigation's hardcoded citation. There, the system *pretended* to be grounded and wasn't. Here, the system *declares* branching and executes linearity —?which is almost more dangerous, because the model layer makes the feature look done. If you read only `models.py`, you'd conclude conditional workflows exist. You have to read `engine.py` to see they don't run.
 
 ### Why Did This Happen? (The Part That Took Longer)
 
-Finding the gap was the first step. Understanding *why it was left there* is the part that separates a bug report from an investigation. So I went looking for the traces 鈥?and what I found was a *silence*.
+Finding the gap was the first step. Understanding *why it was left there* is the part that separates a bug report from an investigation. So I went looking for the traces —?and what I found was a *silence*.
 
-**No TODO. No `NotImplementedError`. No "future work" comment.** I grepped the entire `workflows/` directory for `TODO`, `FIXME`, `pass`, `NotImplemented` 鈥?nothing. The condition field isn't a stub awaiting implementation; it's a finished-looking field that was never wired.
+**No TODO. No `NotImplementedError`. No "future work" comment.** I grepped the entire `workflows/` directory for `TODO`, `FIXME`, `pass`, `NotImplemented` —?nothing. The condition field isn't a stub awaiting implementation; it's a finished-looking field that was never wired.
 
-**Git says it arrived with the first commit.** `git log -S "condition"` shows the field was added in the very first commit that created the workflow engine (`df07328: "feat: agent framework and workflow engine"`). It's not a regression 鈥?nothing regressed. It shipped designed-but-unexecuted from day one.
+**Git says it arrived with the first commit.** `git log -S "condition"` shows the field was added in the very first commit that created the workflow engine (`df07328: "feat: agent framework and workflow engine"`). It's not a regression —?nothing regressed. It shipped designed-but-unexecuted from day one.
 
 **And the production graph never even uses it.** This is the deepest tell. The API layer builds a real `GraphDefinition` for every audit workflow (`workflows.py:42`):
 
@@ -151,7 +151,7 @@ edges=[Edge(source="planner", target="knowledge"), Edge(source="knowledge", targ
        Edge(source="risk", target="evidence"), Edge(source="evidence", target="reviewer")],
 ```
 
-Every edge is unconditional. In production, no workflow has ever constructed a `condition` 鈥?so the field isn't just un-executed, it's *un-fed*. The engine ignores conditions, and no caller ever provides one. Two independent layers both skip the feature.
+Every edge is unconditional. In production, no workflow has ever constructed a `condition` —?so the field isn't just un-executed, it's *un-fed*. The engine ignores conditions, and no caller ever provides one. Two independent layers both skip the feature.
 
 Now here's the contrast that made me understand the *kind* of silence this is. The codebase has a second "not yet implemented" feature, and it's handled completely differently. `SubprocessSandbox` exists next to `AsyncTimeoutSandbox`, and its docstring is explicit:
 
@@ -164,11 +164,11 @@ logger.warning("subprocess_sandbox_not_implemented", fallback="AsyncTimeoutSandb
 
 Three honest signals: the docstring says "鐢熶骇鐜" (production), the fallback is explicit, and it logs a warning at runtime. If you hit `SubprocessSandbox`, you *know* it's a placeholder.
 
-`condition` has none of those. No docstring caveat, no fallback, no warning 鈥?just a typed field with a helpful example in a comment. **This is the difference between an honest placeholder and a silent one.** An honest placeholder tells you it's not the real thing. A silent one looks like the real thing until you trace the execution path.
+`condition` has none of those. No docstring caveat, no fallback, no warning —?just a typed field with a helpful example in a comment. **This is the difference between an honest placeholder and a silent one.** An honest placeholder tells you it's not the real thing. A silent one looks like the real thing until you trace the execution path.
 
-I think I now understand why it happened, and it's not malice or incompetence. The *data model* and the *execution model* were written at different times by people solving different problems. The model says "here's what a workflow can express" 鈥?conditions, approvals, three-way decisions. The engine says "here's what a workflow does" 鈥?run nodes in topological order, enforce budgets, record traces. The model is aspirational; the engine is pragmatic.
+I think I now understand why it happened, and it's not malice or incompetence. The *data model* and the *execution model* were written at different times by people solving different problems. The model says "here's what a workflow can express" —?conditions, approvals, three-way decisions. The engine says "here's what a workflow does" —?run nodes in topological order, enforce budgets, record traces. The model is aspirational; the engine is pragmatic.
 
-So here's the honest summary: **the condition field isn't broken. It's unfinished architecture pretending to be finished.** The fix isn't "repair a feature" 鈥?it's "decide whether the aspiration is still the goal, then wire it or delete it."
+So here's the honest summary: **the condition field isn't broken. It's unfinished architecture pretending to be finished.** The fix isn't "repair a feature" —?it's "decide whether the aspiration is still the goal, then wire it or delete it."
 
 ## The Comparison: What Actually Branches
 
@@ -184,20 +184,20 @@ elif decision.decision == "MODIFY":
     state.status = "RUNNING"
 ```
 
-`REJECTED` and `MODIFY` differ by one line 鈥?clearing `agent_results`. Neither changes the node sequence; neither re-enters at a different point. The human's "modify" resets the *state* but not the *graph*. For an audit workflow, that's a meaningful gap: a modified risk assessment should re-run the risk node, not replay the whole chain with an empty state.
+`REJECTED` and `MODIFY` differ by one line —?clearing `agent_results`. Neither changes the node sequence; neither re-enters at a different point. The human's "modify" resets the *state* but not the *graph*. For an audit workflow, that's a meaningful gap: a modified risk assessment should re-run the risk node, not replay the whole chain with an empty state.
 
-The strongest contrast is with the papers. AutoGen's agents converse 鈥?the conversation *is* the routing. MetaGPT encodes SOPs where roles subscribe to messages based on their profiles, and the engineer agent explicitly re-checks generated code. Both papers describe systems where runtime state feeds back into execution. AuditFlow's engine has the *types* for that (conditions, `next_action`) but the execution is a flat topological pass. The scaffolding for dynamic orchestration exists; the dynamics don't.
+The strongest contrast is with the papers. AutoGen's agents converse —?the conversation *is* the routing. MetaGPT encodes SOPs where roles subscribe to messages based on their profiles, and the engineer agent explicitly re-checks generated code. Both papers describe systems where runtime state feeds back into execution. AuditFlow's engine has the *types* for that (conditions, `next_action`) but the execution is a flat topological pass. The scaffolding for dynamic orchestration exists; the dynamics don't.
 
 ## The Papers Were Validation, Not Inspiration
 
-I didn't need the papers to find the dead condition field 鈥?I needed `grep` and one careful read of `engine.py`. I used the knowledge base to check whether "workflow branching must be executed, not declared" was my finding or established fact. It's established fact.
+I didn't need the papers to find the dead condition field —?I needed `grep` and one careful read of `engine.py`. I used the knowledge base to check whether "workflow branching must be executed, not declared" was my finding or established fact. It's established fact.
 
 **Both papers converge on one idea: execution must react to runtime state.**
 
-- **AutoGen** (2308.08155, retrieved at similarity 0.888) is an example: agents cooperate through conversation, and the developer writes the conversation protocol. Routing emerges from dialogue 鈥?runtime state *is* the mechanism.
+- **AutoGen** (2308.08155, retrieved at similarity 0.888) is an example: agents cooperate through conversation, and the developer writes the conversation protocol. Routing emerges from dialogue —?runtime state *is* the mechanism.
 - **MetaGPT** (2308.00352, retrieved at similarity 0.746) is the other: roles subscribe to messages based on their profiles; the engineer agent checks its own output and iterates. The SOP encodes conditional behavior, and the code executes it.
 
-Two different mechanisms, one shared principle: **orchestration that doesn't react to runtime state is a script wearing a graph's clothes.** The papers describe the ideal; my code read showed me the specific gap 鈥?a condition field that never gates a transition. That gap is mine, and it's more useful than the general principle.
+Two different mechanisms, one shared principle: **orchestration that doesn't react to runtime state is a script wearing a graph's clothes.** The papers describe the ideal; my code read showed me the specific gap —?a condition field that never gates a transition. That gap is mine, and it's more useful than the general principle.
 
 ## The Fix I'd Actually Ship
 
@@ -205,9 +205,9 @@ Based on the investigation, four concrete changes, in order of value:
 
 1. **Wire `Edge.condition` into the topological walk.** After computing the order, evaluate each edge's condition against `state.agent_results` before following it; skip targets whose condition is false. Start with string expressions matching the documented example (`"risk.level == HIGH"`), not a full expression language. This turns the declared DAG into an executed DAG.
 
-2. **Make `REJECTED` / `MODIFY` re-enter at a real node.** When a human modifies the risk assessment, the workflow should resume at the risk node, not replay the whole chain with cleared state. The `ApprovalDecision.modifications` field exists 鈥?use it to target a node.
+2. **Make `REJECTED` / `MODIFY` re-enter at a real node.** When a human modifies the risk assessment, the workflow should resume at the risk node, not replay the whole chain with cleared state. The `ApprovalDecision.modifications` field exists —?use it to target a node.
 
-3. **Delete or consume `next_action`.** Either the engine routes on it (and the topological sort becomes a fallback), or agents shouldn't return it 鈥?a field that suggests routing but never routes is the exact pattern that misled me for two articles.
+3. **Delete or consume `next_action`.** Either the engine routes on it (and the topological sort becomes a fallback), or agents shouldn't return it —?a field that suggests routing but never routes is the exact pattern that misled me for two articles.
 
 4. **Add a test that asserts branching.** The reason this gap survived is that the test suite exercises linear graphs. One test with a graph where `risk.level == HIGH` gates an approval node would have caught it.
 
@@ -215,25 +215,25 @@ Based on the investigation, four concrete changes, in order of value:
 
 Not everything is broken. The engine is honestly good in the ways that matter for an audit product:
 
-- **Trace is the product.** `ExecutionTrace` records input, output, duration, and error per step 鈥?an auditor can reconstruct exactly what each agent saw. LangGraph checkpoints are designed for resumability; this is designed for *inspection*. Different goals, and for this domain the inspection goal is the right one.
-- **The sandbox isolates failures.** `AsyncTimeoutSandbox` kills a hung node at 300 seconds and isolates the exception from the pipeline. That's production instinct 鈥?a hung LLM call should never block an audit workflow.
+- **Trace is the product.** `ExecutionTrace` records input, output, duration, and error per step —?an auditor can reconstruct exactly what each agent saw. LangGraph checkpoints are designed for resumability; this is designed for *inspection*. Different goals, and for this domain the inspection goal is the right one.
+- **The sandbox isolates failures.** `AsyncTimeoutSandbox` kills a hung node at 300 seconds and isolates the exception from the pipeline. That's production instinct —?a hung LLM call should never block an audit workflow.
 - **The state machine is honest about HITL.** `WAITING_APPROVAL` is a first-class state, and the engine emits typed events (`event_approval_required`, `event_approval_submitted`) so the frontend renders the pause without polling.
 
-Why does this matter? Because it shows the team can build orchestration infrastructure correctly. The gap isn't "they don't know how" 鈥?it's "the branching layer is declared but not executed," which is a much smaller, more tractable problem.
+Why does this matter? Because it shows the team can build orchestration infrastructure correctly. The gap isn't "they don't know how" —?it's "the branching layer is declared but not executed," which is a much smaller, more tractable problem.
 
 ## Lessons Learned
 
 1. **An agent's return value is runtime data, not architecture.** `next_action="REVIEWER_AGENT"` describes one handoff, not the orchestration model. I wrote a wrong article from it. The `GraphDefinition` was a file away.
 
-2. **"Declared but not executed" is the subtlest lie in a codebase.** `Edge.condition` looks implemented 鈥?it's in the model, it's typed, it's documented with an example. It doesn't run. A field that exists but never gates is worse than a missing feature, because the model layer makes it look done.
+2. **"Declared but not executed" is the subtlest lie in a codebase.** `Edge.condition` looks implemented —?it's in the model, it's typed, it's documented with an example. It doesn't run. A field that exists but never gates is worse than a missing feature, because the model layer makes it look done.
 
-3. **The doc was right this time 鈥?and that didn't save me.** The handover doc correctly claimed DAG + token budget + checkpoint. I still wrote the wrong article, because I trusted one piece of runtime data over the doc, without reading either the doc's claims against code. The fix is the same as investigation #1: read the code, then decide who's lying.
+3. **The doc was right this time —?and that didn't save me.** The handover doc correctly claimed DAG + token budget + checkpoint. I still wrote the wrong article, because I trusted one piece of runtime data over the doc, without reading either the doc's claims against code. The fix is the same as investigation #1: read the code, then decide who's lying.
 
-4. **The topological sort is the execution model.** Whatever the graph *declares*, the engine executes a linear topological pass. When you review an orchestration system, find the loop that actually runs nodes 鈥?that's the truth, not the model file.
+4. **The topological sort is the execution model.** Whatever the graph *declares*, the engine executes a linear topological pass. When you review an orchestration system, find the loop that actually runs nodes —?that's the truth, not the model file.
 
-5. **The papers confirm the principle; the code found the gap.** "Orchestration must react to state" is established fact (AutoGen through conversation, MetaGPT through profile-subscribed messages). The dead condition field is my finding 鈥?code 鈫?conclusion 鈫?papers 鈫?validation, in that order.
+5. **The papers confirm the principle; the code found the gap.** "Orchestration must react to state" is established fact (AutoGen through conversation, MetaGPT through profile-subscribed messages). The dead condition field is my finding —?code 鈫?conclusion 鈫?papers 鈫?validation, in that order.
 
-6. **Ask *why* the bug is there, not just that it is.** The condition field survives because it's an *honest-looking silence*: no TODO, no warning, no fallback 鈥?and git shows it shipped designed-but-unwired in the first commit, while production graphs never even feed it a value. Compare that with `SubprocessSandbox`, which announces its placeholder status in three places. The fix for a silent gap isn't "repair a feature" 鈥?it's "decide whether the aspiration is still the goal, then wire it or delete it."
+6. **Ask *why* the bug is there, not just that it is.** The condition field survives because it's an *honest-looking silence*: no TODO, no warning, no fallback —?and git shows it shipped designed-but-unwired in the first commit, while production graphs never even feed it a value. Compare that with `SubprocessSandbox`, which announces its placeholder status in three places. The fix for a silent gap isn't "repair a feature" —?it's "decide whether the aspiration is still the goal, then wire it or delete it."
 
 ## Key Takeaways
 
@@ -246,16 +246,16 @@ Why does this matter? Because it shows the team can build orchestration infrastr
 
 ## Investigation Summary
 
-- **Initial hypothesis:** Orchestration is a linear `next_action` chain 鈥?the evidence agent's return value said so.
+- **Initial hypothesis:** Orchestration is a linear `next_action` chain —?the evidence agent's return value said so.
 - **Evidence collected:** `GraphDefinition` is a real DAG (models.py); `_topological_order` never reads `Edge.condition` (engine.py); production graphs never pass a condition (`workflows.py:42`); zero TODO/NotImplemented in the workflows directory; git shows `condition` shipped in the first commit (`df07328`); `SubprocessSandbox` is the honest-placeholder counterexample.
-- **Final conclusion:** The engine is a real DAG executed as a chain 鈥?branching is *declared, but not executed*. It's unfinished architecture pretending to be finished, not a broken feature.
+- **Final conclusion:** The engine is a real DAG executed as a chain —?branching is *declared, but not executed*. It's unfinished architecture pretending to be finished, not a broken feature.
 - **Confidence:** High. Every claim above is a direct read of the code or git history; the only thing I did not verify is whether a condition evaluator exists outside the `workflows/` directory.
 
 ## Next Investigation
 
-**Question:** The RAG pipeline 鈥?the handover doc claims hybrid search (vector + BM25 with RRF), semantic chunking, and citation grounding. Does the search endpoint actually run both branches, or is one of them the same kind of *declared, but not executed* gap I just found in the workflow engine?
+**Question:** The RAG pipeline —?the handover doc claims hybrid search (vector + BM25 with RRF), semantic chunking, and citation grounding. Does the search endpoint actually run both branches, or is one of them the same kind of *declared, but not executed* gap I just found in the workflow engine?
 
-**Current hypothesis:** Given the pattern, the hybrid path is partially wired 鈥?vector search real, keyword branch declared.
+**Current hypothesis:** Given the pattern, the hybrid path is partially wired —?vector search real, keyword branch declared.
 
 **Confidence:** medium.
 
@@ -263,6 +263,6 @@ Why does this matter? Because it shows the team can build orchestration infrastr
 
 **Open questions:** Is there a `condition` evaluator anywhere in the repo I haven't found (grep said no, but the search was directory-scoped)? Does RRF exist as a function, or only as a plan?
 
-**What I'll check:** `backend/scripts/batch_index.py`, the chunker, and the search endpoint 鈥?and whether RRF actually merges two result sets or just re-scores one.
+**What I'll check:** `backend/scripts/batch_index.py`, the chunker, and the search endpoint —?and whether RRF actually merges two result sets or just re-scores one.
 
 **I'll report back after reading the code.**
