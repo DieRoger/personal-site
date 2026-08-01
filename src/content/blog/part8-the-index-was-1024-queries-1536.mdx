@@ -1,0 +1,255 @@
+---
+title: "The Index Was 1024 Dimensions. The Queries Were 1536. The Search Never Worked."
+description: "Code Archaeology Part 8 — Two Vector Spaces in One System: the knowledge base was indexed with a local 1024-dimension embedding model. The API layer queried it with a 1536-dimension API model. PostgreSQL either rejected the mismatch or returned similarity scores between incompatible spaces. Search — the system's core feature — was broken at its foundation, and unit tests couldn't see it."
+date: "2026-08-02"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+part: 8
+impact: critical
+finding: "The knowledge base was indexed in 1024 dimensions; API queries ran in 1536 — two vector spaces in one system, and search could never work coherently."
+tags: ["Code Archaeology", "Embedding", "Vector Search", "RAG", "PGVector", "Engineering"]
+---
+
+# The Index Was 1024 Dimensions. The Queries Were 1536. The Search Never Worked.
+
+*This is the eighth Code Archaeology investigation. Part 7 found that my own system's API never persisted anything — POST returned 201, the row vanished. This one is the sibling: the system's *retrieval* — the feature it actually demoed — was built on two incompatible vector spaces. The knowledge base was indexed with a local model producing 1024-dimensional vectors. The API layer queried it with an API model producing 1536-dimensional vectors. Either PostgreSQL rejected the dimension mismatch outright, or — if the numbers had matched — it would have compared vectors from different semantic spaces and returned scores that meant nothing. Search, the reason the system existed, was broken at the foundation.*
+
+## The Hook
+
+The knowledge base had 26 papers, 1288 chunks, indexed with `FastEmbeddingService` — `BAAI/bge-large-en-v1.5`, **1024 dimensions**. The ORM column was `Vector(1024)`.
+
+The agent API layer — the code path that actually searched — was configured with `LiteLLMEmbeddingService` — OpenAI's `text-embedding-3-small`, **1536 dimensions**.
+
+Same system. Two vector spaces. The index was built in one; the queries ran in another.
+
+*Declared, but not searchable.* That's the pattern this series keeps uncovering — and this time the two halves of the lie were in different files.
+
+Let me show you how I got there.
+
+## The Expectation
+
+The system demos well. You upload a paper, it gets chunked and embedded, and you can search it — the retrieval pipeline returned results with similarity scores. I expected that pipeline to be coherent: the same embedding model that indexed the corpus would embed the queries. That's the entire premise of vector search — query and document must live in the same vector space for cosine similarity to mean anything.
+
+What I found instead was that the system had *two* embedding paths, and they disagreed about the universe they were in. The knowledge pipeline used the local 1024-dimension model. The agent API used the 1536-dimension API model. Both were "the embedding service" — there was just no single source of truth for which one the system actually ran.
+
+## The Investigation
+
+### Search #1: The Index — Where the Corpus Lives
+
+The knowledge base is indexed by `import_papers.py`, which embeds every chunk with the local model:
+
+```python
+from infrastructure.embedding.fast_embedding import FastEmbeddingService
+embedder = FastEmbeddingService()      # BAAI/bge-large-en-v1.5, 1024 dim
+```
+
+`FastEmbeddingService` is explicit about its dimensionality:
+
+```python
+MODEL_NAME = "BAAI/bge-large-en-v1.5"
+DIM = 1024
+```
+
+And the ORM column that stores these vectors is dimension-locked:
+
+```python
+embedding = mapped_column(Vector(1024))   # models.py:81
+```
+
+So the corpus is in a 1024-dimensional space. That's the ground truth of the database — a `Vector(1024)` column can only hold 1024-dimensional vectors.
+
+**Conclusion:** The index is built and stored in a 1024-dimensional space. The database enforces this.
+
+### Search #2: The Query — Where the Search Actually Runs
+
+The search path is different. The agent API — the code path real users hit — constructs its embedder differently:
+
+```python
+# api/routers/agents.py (before the fix)
+def _get_embedder() -> EmbeddingService:
+    return LiteLLMEmbeddingService()     # ← hardcoded, no config
+```
+
+`LiteLLMEmbeddingService` defaults to OpenAI's `text-embedding-3-small`, and the dimension map is explicit:
+
+```python
+_DIM_MAP = {
+    "openai/text-embedding-3-small": 1536,
+    "openai/text-embedding-ada-002": 1536,
+}
+```
+
+So queries were embedded in a **1536-dimensional space** and then fed to `vector_search`, which runs:
+
+```python
+DocumentChunkModel.embedding.cosine_distance(vec)
+```
+
+A 1536-dimensional vector against a 1024-dimensional column. In PostgreSQL, this is not a soft failure — pgvector raises a hard error on dimension mismatch: `different vector dimensions`. And even in the mode where the numbers happened to align, the vectors would come from different models — `bge-large-en-v1.5` vs `text-embedding-3-small` — which are different semantic spaces entirely.
+
+**Conclusion:** The query path embeds in 1536 dimensions and throws it at a 1024-dimension index. Either a hard dimension error or a meaningless similarity score.
+
+### Search #3: The Config — Why the System Ran Both
+
+The two paths disagreed because the configuration drove them differently. `knowledge.py` checked a setting:
+
+```python
+if settings.embedding_mode == "local":
+    embedder = LocalBgeEmbeddingService()
+else:
+    embedder = LiteLLMEmbeddingService()
+```
+
+And the `.env` had:
+
+```text
+EMBEDDING_MODE=api
+EMBEDDING_API_MODEL=text-embedding-3-small
+```
+
+So the knowledge *pipeline* (indexing) used fastembed — hardcoded in the script, ignoring the setting. The API *query* path used the setting — which pointed at the 1536-dimension API model. One system, two different answers to "what model embeds this text?", and the setting only governed one of them.
+
+**Conclusion:** There is no single source of truth for the embedding model. The indexing path and the query path read different configuration, producing incompatible vector spaces.
+
+### Search #4: Why the Demos Worked
+
+The system demoed search successfully — retrieval returned chunks with scores. How, if the spaces are incompatible?
+
+The retrieval that demoed well was the script's own path: `import_papers.py` embeds queries with the same `FastEmbeddingService` it used to index — same model, same 1024 dimensions, same space. The script is self-consistent, so script-level retrieval worked. The API path — the one real users hit — used the API embedder and would fail or return garbage.
+
+The same shape as Part 7: the working path (the script) masked the broken path (the API). The system could demonstrate retrieval because the demonstration used the coherent path. The product's actual search path was never exercised coherently.
+
+**Conclusion:** The working demo path (script-consistent embedding) masked the broken API path (incompatible embedding). The demo proved the *concept* worked; it didn't prove the *product* did.
+
+## The Discovery
+
+Here's the full map of the two vector spaces, side by side:
+
+| Path | Model | Dimensions | Space |
+|---|---|---|---|
+| Indexing (`import_papers.py`) | `FastEmbeddingService` (bge-large-en-v1.5) | **1024** | Local, self-consistent |
+| ORM column | `Vector(1024)` | **1024** | Matches the index |
+| API query (`agents.py`) | `LiteLLMEmbeddingService` (text-embedding-3-small) | **1536** | API model, **incompatible** |
+| Knowledge pipeline query | `EMBEDDING_MODE=api` → LiteLLM | **1536** | Same incompatibility |
+
+Two of the four paths are in 1024-space; two are in 1536-space. The system was literally speaking two languages about the same data, and the database column — the one thing that couldn't lie — was locked to 1024.
+
+The severity depends on which failure mode PGVector took:
+- **Hard failure**: `different vector dimensions` — search crashes with a 500, which at least is visible.
+- **Soft failure** (if dimensions had matched): cosine similarity between vectors from different models — scores that look plausible and mean nothing. This is the worse case: a search that returns results you can't trust, with no error to warn you.
+
+Either way, the system's search — the feature it was built around — could not work through the API. The chunks were indexed correctly; the queries were formed in a different universe; the two never met.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+How does a system end up with two embedding models?
+
+**The indexing script chose the local model for practical reasons; the API chose the API model for convenience.** `import_papers.py` uses fastembed because it's free, private, and runs locally — a deliberate choice for batch processing 26 papers. The API layer uses LiteLLM because it's the "default" embedding path — the one the config points at when you don't override it. Two different files, two different defaults, no shared decision.
+
+**The setting was written for one path and ignored by the other.** `EMBEDDING_MODE` exists, but only `knowledge.py` reads it. The indexing script hardcodes `FastEmbeddingService` without consulting the setting. So the config — the thing that's supposed to be the single source of truth — governed only half the system. The other half made its own choice.
+
+**And the ORM constraint was the only honest witness.** `Vector(1024)` couldn't be fudged. It locked the database to 1024 dimensions, so the index was always in the local model's space. The mismatch was always the API's fault — the query path was the one out of alignment with reality.
+
+Let me be honest about what this means. Search is the product's core promise — "upload papers, find what you need." The index was correct, the queries were wrong, and nothing in the unit tests could see it, because the unit tests mocked the embedder. The demos worked because the demo path was self-consistent. The product was a demo with a broken real path, and the break was invisible from inside the system — you had to check what model each path actually used, and whether they agreed.
+
+**So here's the honest summary: the search path was never coherent — the index lived in 1024-dimension space, the queries were built in 1536-dimension space, and the only thing that noticed was the database column, which refused to hold the mismatch. It's not that search was buggy; it's that the system had two definitions of 'embedding' and never reconciled them.** The fix wasn't tuning — it was making every path use the same model, through one factory.
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the dimension mismatch — I needed to read two files and check the config. I used the knowledge base to check whether "query and corpus must share a vector space" was my finding or established fact. It's established fact, and it's the entire premise of dense retrieval.
+
+**The literature describes the requirement; the code reveals the violation.**
+
+- **ColBERT** (2004.12832, retrieved at similarity 0.699) is the sharpest example: retrieval is a *token-level interaction between query and document* — the query's tokens are matched against the document's tokens in a shared embedding space. The entire method assumes query and document embeddings are comparable; there is no ColBERT if they're in different spaces.
+- **Precise Zero-Shot Dense Retrieval** (2212.10496, retrieved at similarity 0.746) is the other: dense retrieval's quality depends on the embedding model's representation — the space the model produces *is* the retrieval quality. Different models, different spaces, incomparable similarities.
+- **Corrective RAG (CRAG)** (2401.15884, retrieved at similarity 0.828) closes the loop: retrieval quality drives generation quality — when retrieval is wrong, the RAG answer is wrong. A 1536-dimension query against a 1024-dimension index isn't "slightly worse retrieval"; it's broken retrieval feeding a confidently wrong answer.
+
+Two mechanisms, one shared principle: **vector search has no meaning across vector spaces.** ColBERT needs shared-space token interactions; dense retrieval's quality *is* its space. My code had two spaces, and the papers make clear that's not a quality difference — it's a category error. That gap is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, the fix is one shared source of truth — and it was already shipped:
+
+```python
+# infrastructure/embedding/factory.py
+def build_embedder() -> EmbeddingService:
+    if settings.embedding_mode == "local":
+        return FastEmbeddingService()      # bge-large-en-v1.5, 1024 dim
+    return LiteLLMEmbeddingService()
+
+# agents.py + knowledge.py both call build_embedder()
+```
+
+And the config that makes it real:
+
+```text
+EMBEDDING_MODE=local
+```
+
+One factory, one setting, every embedding consumer routed through it. The indexing script, the API query path, the grounding checker — all now use the same model, the same 1024 dimensions, the same vector space. The `Vector(1024)` column and the query vectors finally agree.
+
+**Validation — the round-trip search test.** The fix isn't real until this passes:
+
+```text
+1. Index a document with build_embedder()        → 1024-dim vectors in Vector(1024)
+2. Search it with build_embedder()               → same model, same space
+3. Assert search returns the expected chunk      → scores are meaningful
+4. Assert no dimension error (500) from the API  → query path is coherent
+```
+
+Before the fix, step 4 either crashes with `different vector dimensions` or returns meaningless scores. After the fix, search is coherent end to end. This is the acceptance test a retrieval system was always missing: **a search isn't finished when it returns results — it's finished when the query and the index provably share a vector space.**
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The design around the mismatch had real strengths:
+
+- **The ORM constraint was honest.** `Vector(1024)` couldn't be fudged — the database refused to hold a 1536-dimension vector, which is what made the mismatch discoverable. Constraints that can't lie are the best kind.
+- **The local model choice was sound.** `bge-large-en-v1.5` via fastembed — 1024 dimensions, free, private, no torch dependency — was the right call for the indexing workload. The problem wasn't the model; it was that the API didn't use it.
+- **The factory abstraction was the right shape.** Once every path routes through `build_embedder()`, the system has a single source of truth. The fix was architectural, not cosmetic.
+
+Why does this matter? Because it shows the *idea* of the retrieval system was coherent — local embedding, PGVector, self-consistent indexing. The failure was that the query path didn't share the indexing path's model. One factory fixed it, because the abstraction was already there.
+
+## Lessons Learned
+
+1. **A vector space is a commitment, not a detail.** The index in 1024-space and the queries in 1536-space weren't "two models" — they were two universes. Cosine similarity has no meaning across them, and the database column was the only thing that refused to pretend otherwise.
+
+2. **The config governed half the system.** `EMBEDDING_MODE` was read by the knowledge pipeline but ignored by the indexing script and overridden by the API's hardcoded choice. A setting that only some paths honor isn't configuration — it's a suggestion. Single source of truth means *every* consumer, or none.
+
+3. **The demo path masked the product path.** Script-level retrieval worked because the script embedded queries with the same model it indexed with. The API path — the real product — never ran coherently. The same shape as Part 7: a working path hides a broken one, and demos are the worst offenders.
+
+4. **Dimension mismatch is a hard error, not a soft degradation.** PGVector rejects 1536-vs-1024 outright, or — if dimensions had aligned — would silently compare different models' spaces. Both are fatal to retrieval; one is loud, one is silent. The silent case is worse: results you can't trust, no error to warn you.
+
+5. **The papers confirm the principle; the code found the gap.** "Query and corpus must share a vector space" is established fact (ColBERT through shared-space interaction, Precise Dense through space-as-quality, CRAG through retrieval-to-generation propagation). The 1536-vs-1024 mismatch is my finding — code → conclusion → papers → validation, in that order.
+
+## Key Takeaways
+
+- **LuoBlog indexed in 1024 dimensions and queried in 1536.** The knowledge pipeline used `FastEmbeddingService` (bge-large-en-v1.5); the API used `LiteLLMEmbeddingService` (text-embedding-3-small).
+- **The ORM column was `Vector(1024)`.** The database locked the index to 1024 dimensions, making the query path's 1536 the constant offender.
+- **PGVector either errored or returned garbage.** `different vector dimensions` on hard mismatch; meaningless cosine similarity if dimensions aligned across different models.
+- **The demo masked the product.** Script-level retrieval was self-consistent (same model for index and query); the API path never ran coherently.
+- **The fix is one factory.** `build_embedder()` routes every consumer through the same model; `EMBEDDING_MODE=local` makes it real.
+- **The papers validate the principle; they didn't inspire the finding.** ColBERT (0.699), Precise Dense (0.746), and CRAG (0.828) confirm shared-space retrieval and its downstream cost. The dimension mismatch is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** Search works — the demo returned chunks with scores, so the retrieval pipeline must be coherent.
+- **Evidence collected:** `import_papers.py` uses `FastEmbeddingService` (bge-large-en-v1.5, `DIM=1024`); `models.py:81` is `Vector(1024)`; `agents.py` (pre-fix) hardcoded `LiteLLMEmbeddingService`; `api_embedding.py` maps `text-embedding-3-small` to 1536; `knowledge.py` reads `EMBEDDING_MODE=api` → LiteLLM; the fix (`build_embedder()` + `EMBEDDING_MODE=local`) routes all consumers through one model.
+- **Final conclusion:** The search path was built on two incompatible vector spaces — the index in 1024 dimensions, the queries in 1536. PGVector either rejected the mismatch or returned meaningless similarities, and the coherent demo path masked the broken product path. Software doesn't ship when search returns results; it ships when the query and the index provably share a vector space. **A search across vector spaces is not a search — it's a random number generator with a similarity score.**
+- **Confidence:** High. Every claim is a direct read of the code, config, and ORM; the dimension values come from the model constants and the `Vector(1024)` column definition.
+
+## Next Investigation
+
+**Question:** The knowledge base also had a `LocalBgeEmbeddingService` (BAAI/bge-m3, sentence-transformers) that was the "local" branch of `knowledge.py` before the fix — a *third* embedding implementation in the same codebase. It was removed as dead code in Sprint 2. But the question for the audit trail: did any document get indexed with a different model than the one the ORM column expects, in either direction?
+
+**Current hypothesis:** Given the pattern, at least one document was indexed or queried with a mismatched model at some point, and the dimension error or garbage similarity was absorbed silently.
+
+**Confidence:** low.
+
+**Evidence collected so far:** three embedding implementations existed (FastEmbeddingService, LocalBgeEmbeddingService, LiteLLMEmbeddingService); the ORM is `Vector(1024)`; I haven't checked the actual row dimensionality in the database.
+
+**Open questions:** What dimensions are actually stored in `document_chunks.embedding` today? Is every row 1024, or did any path write a different dimension? Does the chunk metadata store the embedding dimension anywhere?
+
+**What I'll check:** `SELECT vector_dims(embedding) FROM document_chunks` and whether any rows diverge from the ORM's declared dimension.
+
+**I'll report back after reading the code.**
