@@ -1,6 +1,6 @@
 ---
 title: "The Third Approval Button Never Existed: How MODIFY Died on the Way From Design to UI"
-description: "Code Archaeology Part 4 鈥?Three Approval Buttons, Two of Them Real: the workflow engine declares a three-way approval decision 鈥?APPROVED, REJECTED, MODIFY. The frontend renders two buttons. The API doesn't carry modifications. The engine ignores it. And request_approval has no callers at all. The third option is a phantom."
+description: "Code Archaeology Part 4 —?Three Approval Buttons, Two of Them Real: the workflow engine declares a three-way approval decision —?APPROVED, REJECTED, MODIFY. The frontend renders two buttons. The API doesn't carry modifications. The engine ignores it. And request_approval has no callers at all. The third option is a phantom."
 date: "2026-07-12"
 readingTime: "15 min"
 source: original
@@ -13,7 +13,7 @@ tags: ["Code Archaeology", "HITL", "Approval", "Engineering", "Agents"]
 
 # The Third Approval Button Never Existed: How MODIFY Died on the Way From Design to UI
 
-*This is the fourth engineering investigation in the series. The first found evidence that was declared but not grounded. The second found branching that was declared but not executed. The third found a retrieval subsystem that was declared but not wired. This one is the pattern inverted: a feature that is wired at the engine level, declared in the design docs, specified in the API contract 鈥?and dead at every layer below the surface. The third approval option, MODIFY, is the one that makes human-in-the-loop actually useful. It doesn't exist outside the enum.*
+*This is the fourth engineering investigation in the series. The first found evidence that was declared but not grounded. The second found branching that was declared but not executed. The third found a retrieval subsystem that was declared but not wired. This one is the pattern inverted: a feature that is wired at the engine level, declared in the design docs, specified in the API contract —?and dead at every layer below the surface. The third approval option, MODIFY, is the one that makes human-in-the-loop actually useful. It doesn't exist outside the enum.*
 
 ## The Hook
 
@@ -21,7 +21,7 @@ The workflow engine declares three approval decisions: `APPROVED`, `REJECTED`, `
 
 The frontend renders two buttons: **Approve** and **Reject**.
 
-Somewhere between the enum and the button, the third option 鈥?the one that makes a human gate a correction loop instead of a yes/no 鈥?disappeared. Not by accident, not by deletion. It was designed, typed, documented, and then quietly never connected.
+Somewhere between the enum and the button, the third option —?the one that makes a human gate a correction loop instead of a yes/no —?disappeared. Not by accident, not by deletion. It was designed, typed, documented, and then quietly never connected.
 
 *Declared, but not real.* That's the pattern this series keeps uncovering.
 
@@ -29,15 +29,15 @@ Let me show you how I got there.
 
 ## The Expectation
 
-My previous investigation ended with a hypothesis about `ApprovalDecision`: I suspected `MODIFY` was rendered as a generic "re-run" with no way to target a specific node. That's the natural decay 鈥?the third option is the hardest to implement, so it becomes a thin alias for "rejected, but nicer."
+My previous investigation ended with a hypothesis about `ApprovalDecision`: I suspected `MODIFY` was rendered as a generic "re-run" with no way to target a specific node. That's the natural decay —?the third option is the hardest to implement, so it becomes a thin alias for "rejected, but nicer."
 
-What I found was more interesting. `MODIFY` isn't a thin alias. It's a **phantom**: the enum value exists, the engine has a branch for it, the design doc gives it a real purpose (`modifications` to correct inputs and re-run), and the API contract 鈥?the thing a frontend would implement against 鈥?mentions a `modifications` field that the actual request schema doesn't have.
+What I found was more interesting. `MODIFY` isn't a thin alias. It's a **phantom**: the enum value exists, the engine has a branch for it, the design doc gives it a real purpose (`modifications` to correct inputs and re-run), and the API contract —?the thing a frontend would implement against —?mentions a `modifications` field that the actual request schema doesn't have.
 
 So the question became: how many layers deep does the phantom survive? The answer is six.
 
 ## The Investigation
 
-### Search #1: The Engine 鈥?Where MODIFY Goes
+### Search #1: The Engine —?Where MODIFY Goes
 
 `workflows/engine.py` has `submit_decision`, which handles all three decisions:
 
@@ -51,13 +51,13 @@ elif decision.decision == "MODIFY":
     state.status = "RUNNING"
 ```
 
-Three branches. And here's the thing: `REJECTED` and `MODIFY` differ by **one line** 鈥?clearing `agent_results`. `MODIFY` doesn't use `decision.modifications`. It doesn't re-enter at a different node. It doesn't do anything that `REJECTED` doesn't do, minus the reset. The branch exists so the enum value is handled; the behavior is "also resume, but keep the results."
+Three branches. And here's the thing: `REJECTED` and `MODIFY` differ by **one line** —?clearing `agent_results`. `MODIFY` doesn't use `decision.modifications`. It doesn't re-enter at a different node. It doesn't do anything that `REJECTED` doesn't do, minus the reset. The branch exists so the enum value is handled; the behavior is "also resume, but keep the results."
 
-Let me be fair about what this means. The engine isn't *lying* 鈥?it accepts `MODIFY` and resumes the workflow. That's a valid if minimal interpretation. The lie is in the design contract: `ApprovalDecision.modifications` exists in the model, typed as `dict | None`, documented as the mechanism for "the reviewer can change the inputs and re-run." The engine never reads it.
+Let me be fair about what this means. The engine isn't *lying* —?it accepts `MODIFY` and resumes the workflow. That's a valid if minimal interpretation. The lie is in the design contract: `ApprovalDecision.modifications` exists in the model, typed as `dict | None`, documented as the mechanism for "the reviewer can change the inputs and re-run." The engine never reads it.
 
 **Conclusion:** The engine accepts MODIFY but treats it almost identically to REJECTED. The `modifications` payload is defined but never consumed.
 
-### Search #2: The API 鈥?What a Frontend Could Actually Send
+### Search #2: The API —?What a Frontend Could Actually Send
 
 A frontend implements against the API contract. So I read the approval endpoint in `api/routers/workflows.py`:
 
@@ -71,14 +71,14 @@ class ApprovalSubmitRequest(BaseModel):
 
 Two details worth stopping on:
 
-- **`decision: str`** 鈥?not an enum. The comment says `# APPROVED | REJECTED | MODIFY`, but the type is a free string. Send `"BANANA"` and the API accepts it; the engine's `if/elif` chain falls through to no branch, and the workflow stays in whatever state it was. Validation of the three-way decision is a comment, not a constraint.
+- **`decision: str`** —?not an enum. The comment says `# APPROVED | REJECTED | MODIFY`, but the type is a free string. Send `"BANANA"` and the API accepts it; the engine's `if/elif` chain falls through to no branch, and the workflow stays in whatever state it was. Validation of the three-way decision is a comment, not a constraint.
 - **No `modifications` field.** The engine's `ApprovalDecision` model has `modifications: dict | None = None`, but the request schema that feeds it doesn't. A frontend developer reading the API contract to build the "modify inputs" UI would find no way to send the corrections. The field is unreachable from the wire.
 
-And there's a third detail I almost missed: the router constructs the engine fresh on every request (`_get_engine()` at the top of the handler), and the engine's state lives in-memory on the instance. A workflow created in one request lives in one engine; an approval submitted in another request hits a *different* engine with an empty `_states` dict. The `submit_approval` handler would raise `KeyError` 鈫?404 for any real workflow 鈥?unless the workflow and its approval happen to share an engine instance, which nothing in the code enforces.
+And there's a third detail I almost missed: the router constructs the engine fresh on every request (`_get_engine()` at the top of the handler), and the engine's state lives in-memory on the instance. A workflow created in one request lives in one engine; an approval submitted in another request hits a *different* engine with an empty `_states` dict. The `submit_approval` handler would raise `KeyError` 鈫?404 for any real workflow —?unless the workflow and its approval happen to share an engine instance, which nothing in the code enforces.
 
 **Conclusion:** The API layer can't transmit `modifications` (field absent), doesn't validate `decision` (free string), and the per-request engine construction makes the whole flow un-wireable in practice.
 
-### Search #3: The Frontend 鈥?What a Human Actually Sees
+### Search #3: The Frontend —?What a Human Actually Sees
 
 This is where the phantom becomes visible. `frontend/src/features/workflow/ApprovalPanel.tsx`:
 
@@ -98,7 +98,7 @@ const MOCK_ITEMS: ApprovalItem[] = [
 ];
 ```
 
-The approval panel 鈥?the entire human-in-the-loop surface 鈥?is a static mock. Five hardcoded items, two buttons, `useState` that filters the mock array. It doesn't fetch pending approvals from the API. It doesn't POST a decision to the API. The dashboard's status type tells the same story: `'Pending' | 'Approved' | 'Rejected'`.
+The approval panel —?the entire human-in-the-loop surface —?is a static mock. Five hardcoded items, two buttons, `useState` that filters the mock array. It doesn't fetch pending approvals from the API. It doesn't POST a decision to the API. The dashboard's status type tells the same story: `'Pending' | 'Approved' | 'Rejected'`.
 
 I grepped the entire frontend for `MODIFY`, `modify`, `modifications`. Zero matches.
 
@@ -106,11 +106,11 @@ I grepped the entire frontend for `MODIFY`, `modify`, `modifications`. Zero matc
 
 ### Search #4: Who Calls request_approval?
 
-The engine has `request_approval(workflow_id, agent_name, severity, summary)` 鈥?the method that transitions a workflow to `WAITING_APPROVAL` and emits the approval-required event. Without it, no workflow ever enters the approval state, and no approval panel has anything real to show.
+The engine has `request_approval(workflow_id, agent_name, severity, summary)` —?the method that transitions a workflow to `WAITING_APPROVAL` and emits the approval-required event. Without it, no workflow ever enters the approval state, and no approval panel has anything real to show.
 
-I grepped `backend/src` for callers. One hit: the definition in `engine.py:251`. That's it. No agent calls it. No router exposes it. No workflow node invokes it. The `WAITING_APPROVAL` state exists in the enum, the method exists on the engine, the event exists in the event catalog 鈥?and nothing in the product ever triggers them.
+I grepped `backend/src` for callers. One hit: the definition in `engine.py:251`. That's it. No agent calls it. No router exposes it. No workflow node invokes it. The `WAITING_APPROVAL` state exists in the enum, the method exists on the engine, the event exists in the event catalog —?and nothing in the product ever triggers them.
 
-The integration tests call `request_approval` directly to test the state machine. That's the only place it runs 鈥?in tests, hand-invoked, to verify a transition that production never performs.
+The integration tests call `request_approval` directly to test the state machine. That's the only place it runs —?in tests, hand-invoked, to verify a transition that production never performs.
 
 **Conclusion:** The approval flow is never triggered. `request_approval` has zero production callers, so no workflow ever enters `WAITING_APPROVAL` for real.
 
@@ -135,28 +135,28 @@ And here's the part that makes it an *inversion* of this series' earlier finding
 
 ### Why Did This Happen? (The Part That Took Longer)
 
-I wanted to understand why a feature this carefully specified 鈥?three decisions, a `modifications` field, an audit table, a dedicated approval page in the issue tracker 鈥?collapsed into two buttons.
+I wanted to understand why a feature this carefully specified —?three decisions, a `modifications` field, an audit table, a dedicated approval page in the issue tracker —?collapsed into two buttons.
 
-**The design was written as a contract, not a requirement.** `ISSUES.md`, `ADR-004`, and the event-schema docs specify the approval flow in exhaustive detail: `approval_log` DDL with CHECK constraints and REVOKE permissions, `artifact_snapshot` for audit context, the `MODIFY` decision with corrections. These are *excellent* specifications 鈥?the kind that make you trust the feature exists. But a specification is a promise, and this one was written against a target architecture. The code was built against a demo.
+**The design was written as a contract, not a requirement.** `ISSUES.md`, `ADR-004`, and the event-schema docs specify the approval flow in exhaustive detail: `approval_log` DDL with CHECK constraints and REVOKE permissions, `artifact_snapshot` for audit context, the `MODIFY` decision with corrections. These are *excellent* specifications —?the kind that make you trust the feature exists. But a specification is a promise, and this one was written against a target architecture. The code was built against a demo.
 
-**The approval UI was built first, from mock data.** `ApprovalPanel.tsx` predates or ignores the real API. It's a standalone component with hardcoded items 鈥?the kind of thing you build to show a stakeholder "this is what approvals will look like." It became the demo, the demo became the default, and the mock became the de-facto product. The issue tracker's `4.2.1-approval-management-page.md` describes fetching from `GET /api/v1/approvals` 鈥?an endpoint that doesn't exist in the router. The frontend was built against a contract that the backend never implemented.
+**The approval UI was built first, from mock data.** `ApprovalPanel.tsx` predates or ignores the real API. It's a standalone component with hardcoded items —?the kind of thing you build to show a stakeholder "this is what approvals will look like." It became the demo, the demo became the default, and the mock became the de-facto product. The issue tracker's `4.2.1-approval-management-page.md` describes fetching from `GET /api/v1/approvals` —?an endpoint that doesn't exist in the router. The frontend was built against a contract that the backend never implemented.
 
-**And the engine's per-request construction makes the whole thing untestable end-to-end.** `_get_engine()` creates a fresh engine per request. Workflow state lives in `engine._states` 鈥?in memory, on the instance. So `POST /workflows` creates state on engine A, and `POST /approvals` looks it up on engine B. The 404 is guaranteed by the architecture. Even if the frontend had a MODIFY button and the API had a `modifications` field, the approval would fail to find the workflow. The three-way decision isn't just missing UI 鈥?it's missing *persistence*.
+**And the engine's per-request construction makes the whole thing untestable end-to-end.** `_get_engine()` creates a fresh engine per request. Workflow state lives in `engine._states` —?in memory, on the instance. So `POST /workflows` creates state on engine A, and `POST /approvals` looks it up on engine B. The 404 is guaranteed by the architecture. Even if the frontend had a MODIFY button and the API had a `modifications` field, the approval would fail to find the workflow. The three-way decision isn't just missing UI —?it's missing *persistence*.
 
-Let me be honest about what this means for the audit story. An audit system's human-in-the-loop is not a nicety 鈥?it's the entire point. The audit opinion is the human's opinion; the agents are the staff work. A three-way decision (approve / reject / modify-with-corrections) is how a real auditor works: they don't just say yes or no, they say "this is wrong, here's the corrected input, re-run with this." MODIFY is the option that makes HITL a *collaboration* instead of a rubber stamp. Shipping only APPROVED and REJECTED means the system can ask "is this OK?" but not "do this differently" 鈥?which is the more common auditor response.
+Let me be honest about what this means for the audit story. An audit system's human-in-the-loop is not a nicety —?it's the entire point. The audit opinion is the human's opinion; the agents are the staff work. A three-way decision (approve / reject / modify-with-corrections) is how a real auditor works: they don't just say yes or no, they say "this is wrong, here's the corrected input, re-run with this." MODIFY is the option that makes HITL a *collaboration* instead of a rubber stamp. Shipping only APPROVED and REJECTED means the system can ask "is this OK?" but not "do this differently" —?which is the more common auditor response.
 
-**So here's the honest summary: MODIFY isn't broken. It's a specified feature that was never pulled through the stack 鈥?a silent feature that survives only in the enum while every layer below it quietly built around its absence.** The fix isn't "repair MODIFY" 鈥?it's "decide whether three-way approval is the product, and if it is, pull it through all six layers; if it isn't, delete it from the enum and the docs."
+**So here's the honest summary: MODIFY isn't broken. It's a specified feature that was never pulled through the stack —?a silent feature that survives only in the enum while every layer below it quietly built around its absence.** The fix isn't "repair MODIFY" —?it's "decide whether three-way approval is the product, and if it is, pull it through all six layers; if it isn't, delete it from the enum and the docs."
 
 ## The Comparison: What the Papers Say
 
-I didn't need the papers to find the orphan 鈥?I needed `grep` and one read of the frontend. I used the knowledge base to check whether "human feedback must actually loop back into execution" was my finding or established fact. It's established fact.
+I didn't need the papers to find the orphan —?I needed `grep` and one read of the frontend. I used the knowledge base to check whether "human feedback must actually loop back into execution" was my finding or established fact. It's established fact.
 
 **Both papers converge on one idea: feedback is only valuable if it changes what the agent does next.**
 
-- **Reflexion** (2303.11366, retrieved at similarity 0.833) is an example: agents learn from failure through *verbal reinforcement* 鈥?the feedback becomes memory that conditions the next action. Feedback that isn't stored and re-applied is noise; the loop is the mechanism.
-- **AutoGen** (2308.08155, retrieved at similarity 0.771) is the other: human-in-the-loop is built into the conversation protocol 鈥?a human can jump into an agent conversation at any point and steer it. The human's intervention is a first-class event, not a mock.
+- **Reflexion** (2303.11366, retrieved at similarity 0.833) is an example: agents learn from failure through *verbal reinforcement* —?the feedback becomes memory that conditions the next action. Feedback that isn't stored and re-applied is noise; the loop is the mechanism.
+- **AutoGen** (2308.08155, retrieved at similarity 0.771) is the other: human-in-the-loop is built into the conversation protocol —?a human can jump into an agent conversation at any point and steer it. The human's intervention is a first-class event, not a mock.
 
-Two different mechanisms, one shared principle: **a human decision that doesn't change the execution path isn't human-in-the-loop, it's a poll.** MODIFY 鈥?with its `modifications` that re-enter the graph 鈥?is the mechanism that makes feedback real. Shipping APPROVED/REJECTED-only is the software equivalent of a feedback loop that discards the feedback. The papers describe the ideal; my code read showed me the specific gap 鈥?a third decision option that survives in the enum and nowhere else. That gap is mine, and it's more useful than the general principle.
+Two different mechanisms, one shared principle: **a human decision that doesn't change the execution path isn't human-in-the-loop, it's a poll.** MODIFY —?with its `modifications` that re-enter the graph —?is the mechanism that makes feedback real. Shipping APPROVED/REJECTED-only is the software equivalent of a feedback loop that discards the feedback. The papers describe the ideal; my code read showed me the specific gap —?a third decision option that survives in the enum and nowhere else. That gap is mine, and it's more useful than the general principle.
 
 ## The Fix I'd Actually Ship
 
@@ -164,55 +164,55 @@ Based on the investigation, three concrete changes, in order of value:
 
 1. **Make the engine's state survive across requests.** The per-request `_get_engine()` makes workflow+approval inherently un-wireable. A module-level engine, or a store keyed by `workflow_id` that outlives the request, is the prerequisite for *any* of the rest.
 
-2. **Add `modifications` to `ApprovalSubmitRequest` and route it.** The field exists on the domain model; the API just doesn't transmit it. Add it to the schema, pass it into `ApprovalDecision`, and 鈥?the actual work 鈥?make `submit_decision` use it: on `MODIFY`, apply the corrections to `state.agent_results` and re-enter at the node the reviewer targeted. Enforce the three-way decision with `Literal["APPROVED", "REJECTED", "MODIFY"]` while you're in there, so "BANANA" is a 422, not a silent no-op.
+2. **Add `modifications` to `ApprovalSubmitRequest` and route it.** The field exists on the domain model; the API just doesn't transmit it. Add it to the schema, pass it into `ApprovalDecision`, and —?the actual work —?make `submit_decision` use it: on `MODIFY`, apply the corrections to `state.agent_results` and re-enter at the node the reviewer targeted. Enforce the three-way decision with `Literal["APPROVED", "REJECTED", "MODIFY"]` while you're in there, so "BANANA" is a 422, not a silent no-op.
 
-3. **Give the UI a third button and the trigger a real caller.** Replace `MOCK_ITEMS` with a real fetch of pending approvals, add the MODIFY button that opens a corrections editor, and wire the workflow graph's approval node to call `request_approval` 鈥?the `Edge.condition` from investigation #2 is the natural trigger (`"risk.level == HIGH 鈫?approval"`). One wiring fixes the dead trigger and the dead condition from the previous investigation at the same time.
+3. **Give the UI a third button and the trigger a real caller.** Replace `MOCK_ITEMS` with a real fetch of pending approvals, add the MODIFY button that opens a corrections editor, and wire the workflow graph's approval node to call `request_approval` —?the `Edge.condition` from investigation #2 is the natural trigger (`"risk.level == HIGH 鈫?approval"`). One wiring fixes the dead trigger and the dead condition from the previous investigation at the same time.
 
-Notice that none of these changes introduce new functionality. They merely connect functionality that already exists 鈥?the enum, the model field, the engine branch, the event system. That's the whole series' theme in one sentence: **a feature is finished when the last caller exists, not when the first definition does.**
+Notice that none of these changes introduce new functionality. They merely connect functionality that already exists —?the enum, the model field, the engine branch, the event system. That's the whole series' theme in one sentence: **a feature is finished when the last caller exists, not when the first definition does.**
 
 ## What the Good Parts Look Like (Briefly)
 
-Not everything is broken. The specification layer is genuinely excellent 鈥?the kind of thing you'd want in an audit product:
+Not everything is broken. The specification layer is genuinely excellent —?the kind of thing you'd want in an audit product:
 
 - **`approval_log` is designed correctly.** ADR-004 specifies an append-only table with `REVOKE UPDATE, DELETE`, a CHECK constraint on the decision enum, and an `artifact_snapshot` that preserves the audit context at approval time. If it were implemented, it would be the right audit trail.
 - **The three-way decision is the right domain model.** APPROVED / REJECTED / MODIFY with `modifications` is how auditors actually work. The design got the *hard part* right; the implementation lost it in transit.
-- **`request_approval` and the event system are coherent.** `event_approval_required` / `event_approval_submitted` are correctly shaped 鈥?severity, summary, decision, comment. When wired, the WebSocket story will work.
+- **`request_approval` and the event system are coherent.** `event_approval_required` / `event_approval_submitted` are correctly shaped —?severity, summary, decision, comment. When wired, the WebSocket story will work.
 
-Why does this matter? Because it shows the team knows what a correct HITL design looks like. The failure isn't understanding 鈥?it's that the specification was never pulled through, and the demo mock became the shipped surface.
+Why does this matter? Because it shows the team knows what a correct HITL design looks like. The failure isn't understanding —?it's that the specification was never pulled through, and the demo mock became the shipped surface.
 
 ## Lessons Learned
 
-1. **A feature can be specified at the top and absent at the bottom.** MODIFY survives in the enum, the model, and the engine 鈥?and nowhere a human would touch it. Each layer assumed the layer below had it. "It's in the design doc" is the weakest possible evidence that it's in the product.
+1. **A feature can be specified at the top and absent at the bottom.** MODIFY survives in the enum, the model, and the engine —?and nowhere a human would touch it. Each layer assumed the layer below had it. "It's in the design doc" is the weakest possible evidence that it's in the product.
 
-2. **Mock data becomes the product if you demo it long enough.** `ApprovalPanel.tsx` renders hardcoded items against an API that doesn't exist. It was a stakeholder preview that became the de-facto UI. The mock is the most dangerous artifact in a demo-driven codebase 鈥?it looks like the product and hides the absence of the product.
+2. **Mock data becomes the product if you demo it long enough.** `ApprovalPanel.tsx` renders hardcoded items against an API that doesn't exist. It was a stakeholder preview that became the de-facto UI. The mock is the most dangerous artifact in a demo-driven codebase —?it looks like the product and hides the absence of the product.
 
-3. **Per-request engine construction is an architectural guarantee of 404.** Fresh engine per request, in-memory state on the instance: workflow and approval can never meet. This is the third "silent" architectural gap in the series 鈥?no error, no warning, just a KeyError that looks like a typo'd ID.
+3. **Per-request engine construction is an architectural guarantee of 404.** Fresh engine per request, in-memory state on the instance: workflow and approval can never meet. This is the third "silent" architectural gap in the series —?no error, no warning, just a KeyError that looks like a typo'd ID.
 
 4. **A `str` field with a comment is not validation.** `decision: str  # APPROVED | REJECTED | MODIFY` accepts anything. The comment is documentation of intent; the type is the enforcement, and it enforces nothing.
 
-5. **The papers confirm the principle; the code found the gap.** "Feedback must change the next action" is established fact (Reflexion through verbal reinforcement, AutoGen through conversation). The dead-path MODIFY is my finding 鈥?code 鈫?conclusion 鈫?papers 鈫?validation, in that order.
+5. **The papers confirm the principle; the code found the gap.** "Feedback must change the next action" is established fact (Reflexion through verbal reinforcement, AutoGen through conversation). The dead-path MODIFY is my finding —?code 鈫?conclusion 鈫?papers 鈫?validation, in that order.
 
 ## Key Takeaways
 
-- **The approval UI has two buttons; the design has three decisions.** MODIFY 鈥?the option that makes HITL a correction loop 鈥?is absent from the frontend.
+- **The approval UI has two buttons; the design has three decisions.** MODIFY —?the option that makes HITL a correction loop —?is absent from the frontend.
 - **`modifications` is defined in the model and unreachable from the API.** `ApprovalSubmitRequest` doesn't carry it; a frontend couldn't send corrections even if the button existed.
 - **`request_approval` has zero production callers.** No workflow ever enters `WAITING_APPROVAL` for real; the approval flow is test-only.
 - **The engine creates itself per request.** In-memory state + fresh engine = workflow and approval live on different instances; the 404 is architectural.
-- **The mock is the product.** Five hardcoded approval items render where the real API should be 鈥?the demo outlived the feature it previewed.
+- **The mock is the product.** Five hardcoded approval items render where the real API should be —?the demo outlived the feature it previewed.
 - **The papers validate the principle; they didn't inspire the finding.** Reflexion (0.833) and AutoGen (0.771) confirm feedback must loop back. The orphaned MODIFY is what the code actually showed me.
 
 ## Investigation Summary
 
-- **Initial hypothesis:** MODIFY is a thin alias for REJECTED 鈥?a generic "re-run" without node targeting.
+- **Initial hypothesis:** MODIFY is a thin alias for REJECTED —?a generic "re-run" without node targeting.
 - **Evidence collected:** `submit_decision` treats MODIFY nearly identically to REJECTED (engine.py); `ApprovalSubmitRequest` has no `modifications` field and `decision: str` is unvalidated (workflows.py); `ApprovalPanel.tsx` has two buttons over hardcoded `MOCK_ITEMS` and no MODIFY code anywhere in the frontend (grep); `request_approval` has zero production callers (grep); `approval_log` exists only in docs (ADR-004); `_get_engine()` constructs a fresh engine per request.
-- **Final conclusion:** The three-way approval decision is a phantom 鈥?specified at the top, dead at every layer below: engine ignores `modifications`, API can't transmit it, frontend has no MODIFY button, and the trigger is never fired. It's a specified feature that was never pulled through the stack. Software doesn't ship when the enum exists; it ships when the last caller exists. **An enum is not a feature 鈥?a button is not human-in-the-loop.**
+- **Final conclusion:** The three-way approval decision is a phantom —?specified at the top, dead at every layer below: engine ignores `modifications`, API can't transmit it, frontend has no MODIFY button, and the trigger is never fired. It's a specified feature that was never pulled through the stack. Software doesn't ship when the enum exists; it ships when the last caller exists. **An enum is not a feature —?a button is not human-in-the-loop.**
 - **Confidence:** High. Every claim is a direct grep or read of code, frontend, and design docs; the only unverified edge is whether some external caller outside `backend/src` triggers `request_approval` (none found in-repo).
 
 ## Next Investigation
 
-**Question:** The `approval_log` table is specified in ADR-004 with append-only DDL, CHECK constraints, and an `artifact_snapshot` column 鈥?and doesn't exist in the code. The event-schema docs describe nine workflow events including `approval_required` and `approval_submitted`. How much of the *observability* layer 鈥?the audit trail that's supposed to make this an audit product 鈥?is real, versus specified?
+**Question:** The `approval_log` table is specified in ADR-004 with append-only DDL, CHECK constraints, and an `artifact_snapshot` column —?and doesn't exist in the code. The event-schema docs describe nine workflow events including `approval_required` and `approval_submitted`. How much of the *observability* layer —?the audit trail that's supposed to make this an audit product —?is real, versus specified?
 
-**Current hypothesis:** The event catalog is partially real (the engine emits events) but the persistence layer (`agent_execution_log`, `approval_log`, `document_access_log`) is doc-only 鈥?the audit trail that justifies the whole architecture is a design.
+**Current hypothesis:** The event catalog is partially real (the engine emits events) but the persistence layer (`agent_execution_log`, `approval_log`, `document_access_log`) is doc-only —?the audit trail that justifies the whole architecture is a design.
 
 **Confidence:** medium.
 
