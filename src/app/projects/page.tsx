@@ -17,7 +17,7 @@ export default function ProjectsPage() {
       <h1 className="text-3xl font-bold tracking-tight mb-2">Projects</h1>
       <FadeIn>
         <p className="text-muted-foreground mb-10">
-        Production-level AI systems built with modern software engineering practices.
+        Systems I build and investigate — where AI meets reliability, evaluation, and observability.
       </p>
       </FadeIn>
 
