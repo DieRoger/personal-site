@@ -1,0 +1,254 @@
+---
+title: "The API That Said Yes But Never Wrote Anything: A 201 That Was a Lie"
+description: "Code Archaeology Part 7 — The Write Path That Never Committed: POST /articles returned 201 Created. GET /articles/{id} returned 404. The entire API layer had zero commit() calls — repositories flushed to a transaction, the session closed, everything rolled back. 184 unit tests passed. A black-box API test found it in one request."
+date: "2026-08-02"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+part: 7
+impact: critical
+finding: "POST /articles returned 201 Created, GET returned 404 — the entire API write path had zero commit() calls, and every 'successful' write vanished on session close."
+tags: ["Code Archaeology", "Persistence", "Transactions", "FastAPI", "SQLAlchemy", "Engineering"]
+---
+
+# The API That Said Yes But Never Wrote Anything: A 201 That Was a Lie
+
+*This is the seventh Code Archaeology investigation, and the first outside the AuditFlow codebase — this time the system is my own. LuoBlog Studio is an AI-native knowledge and writing workspace: it stores documents, chunks, tags, and articles in PostgreSQL. The first six investigations were about AuditFlow's declared-but-unexecuted features. This one is different: the feature worked — at least, it returned the right status codes. POST /articles returned 201 Created. PUT returned 200. The API was polite, responsive, and wrong. Nothing it wrote ever reached the database. The write path — the most basic promise a storage system makes — had zero commit() calls.*
+
+## The Hook
+
+`POST /articles` returned `201 Created` with a real UUID. `GET /articles/{id}` for that UUID returned `404 Not Found`. Not occasionally — always. The system saved nothing, but said it did.
+
+The repository layer had fourteen `flush()` calls. The whole `src/` tree had zero `commit()` calls. `flush()` sends SQL to the transaction; only `commit()` makes it durable. The session closed at the end of every request and — because nothing was committed — rolled everything back.
+
+The audit trail for how I found it: I wrote a black-box API test. It was the first test in the entire suite that went through the real HTTP layer against the real database. 184 unit tests were green before it. This one found the lie in one request.
+
+*Declared, but not durable.* That's the pattern this series keeps uncovering — and this time it was my own code.
+
+Let me show you how I got there.
+
+## The Expectation
+
+The system is a knowledge workspace. It stores things — documents, chunks, articles, tags. Persistence is not a feature; it's the substrate. So when I added an E2E test that created an article, updated it, and deleted it through the real HTTP API, I expected the standard round-trip: create → 201 → read → 200 → update → 200 → delete → 204.
+
+I did not expect the create to succeed and the read to fail. A system that returns success for a write that never happens is not "buggy" — it's lying. The distinction matters, because a bug is visible and fixable; a lie is only visible if you check what it claimed.
+
+The repository layer used `flush()` — SQLAlchemy's "send this to the transaction" call. I knew that. I also knew `flush()` is not `commit()`. What I didn't know, until the test asked the database directly, was that *nobody in the entire API layer ever committed*.
+
+## The Investigation
+
+### Search #1: The Test That Caught It
+
+The test was simple — a black-box round-trip through the FastAPI app:
+
+```python
+resp = await ac.post("/api/v1/articles", json={"title": "probe"})
+assert resp.status_code == 201          # ← passed
+article_id = resp.json()["data"]["id"]
+
+resp = await ac.get(f"/api/v1/articles/{article_id}")
+assert resp.status_code == 200          # ← FAILED: 404
+```
+
+The create returned 201 with an id. The read of that id returned 404. The test failed on the read — the database had no record of the thing the API claimed to have created.
+
+This is the black-box moment. The API layer, the router, the service, the repository — every internal component *looked* like it worked, because the create handler ran without error and returned a 201. The only way to see the lie was to ask the system what it actually stored, through its own interface.
+
+**Conclusion:** The API returns success for writes that never persist. A round-trip test through the real HTTP layer exposes it immediately.
+
+### Search #2: The Zero-commit Audit
+
+Why did the test fail? I grepped the entire `src/` tree for `commit()`:
+
+```text
+$ grep -rn "commit()" apps/api/src/
+(no matches)
+```
+
+Zero matches. Then I grepped for `flush()`:
+
+```text
+$ grep -rn "flush()" apps/api/src/infrastructure/persistence/
+14 matches — every repository save/update/delete calls flush()
+```
+
+So the architecture was: repositories `flush()` (send SQL to the transaction), and *nobody* commits. The session's lifecycle made this fatal:
+
+```python
+async def get_session():
+    async with async_session() as session:
+        yield session        # ← on exit, uncommitted work is rolled back
+```
+
+SQLAlchemy's `async with` on a session rolls back any uncommitted transaction when the context exits. So the sequence was: repository flushes the INSERT → the request handler returns 201 → the dependency closes the session → the session rolls back the transaction → the INSERT is gone. The API had already told the client "Created." The client had a UUID for a row that never existed.
+
+**Conclusion:** The write path has zero commit calls. `flush()` feeds a transaction that the session's exit always rolls back.
+
+### Search #3: The Counterexample That Hid It
+
+The system had real data — 26 papers in the knowledge base, 1288 chunks. How? The answer is the counterexample that made the bug invisible:
+
+```python
+# scripts/import_papers.py:121
+await session.commit()
+```
+
+The paper-import script commits explicitly. It's a standalone script — not an API request — and it works: that's why the knowledge base has data. But the API layer, the code path real users would hit, never commits. The script's success made the system look persistent while the HTTP write path was silently broken.
+
+This is the most instructive part. A system can have a working persistence path (the script) and a broken one (the API) simultaneously, and the working one masks the broken one. The knowledge base had data — so the system demonstrably "stores things." The fact that the API couldn't store anything required actually asking the API to store something, then asking the database.
+
+**Conclusion:** The script's explicit commit proves the persistence mechanism works — and explains why nobody noticed the API path didn't use it.
+
+### Search #4: Why 184 Tests Didn't Catch It
+
+The suite had 184 tests, all green. How?
+
+- Unit tests mock the repository layer — `AsyncMock()` — so they never touch a real session or a real database. They verify the service calls `repo.save(...)`, not that the save persists.
+- The five E2E tests at the time were read-only: search, retrieval, grounding. None of them wrote to the database through the API.
+
+So the write path was covered by *mocked* tests (which can't catch a missing commit) and *never exercised by a real test* (which would have). The tests verified behavior at the wrong altitude: they confirmed the code calls the right methods, not that the system persists the data. "The repository calls save" and "the row exists in PostgreSQL after the request" are different claims, and the suite only verified the first.
+
+**Conclusion:** Mocked unit tests and read-only E2E tests cannot detect a write path that never commits. The black-box round-trip test is the only one that could.
+
+## The Discovery
+
+Here's the full map of the lie, layer by layer:
+
+| Layer | What it does | What's missing |
+|---|---|---|
+| Router (`POST /articles`) | Validates, calls service, returns 201 | — |
+| Service (`create`) | Builds Article entity, calls repo.save | — |
+| Repository (`save`) | `flush()` — sends INSERT to transaction | **no commit** |
+| Session (`get_session`) | `async with` — closes after request | **rolls back uncommitted work** |
+| Dependency (`get_db`) | Yields session to handler | **no commit on success** |
+| Database | Has 26 papers (from script's explicit commit) | no API-written rows |
+
+Five layers of the write path. Every one does its job *except* the final step — the commit that would make the write real. The API says "Created" because the handler ran without error; the handler ran without error because `flush()` succeeded; the `flush()` succeeded because the transaction was valid — and then the session closed, and the transaction died.
+
+The most interesting part is the *shape* of the failure. This wasn't a crash, a timeout, or an exception. Every component behaved correctly. The router returned 201 because the service returned an article. The service returned an article because `save()` returned it. `save()` returned it because `flush()` succeeded. There was no error anywhere — which is exactly why no test caught it and no log would have shown it. The system was functioning perfectly, according to every layer's own contract, and the data still vanished.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The honest question: how does a storage system ship with no commits?
+
+**The repositories were written against the session's transaction, assuming someone else would commit.** `flush()` is the "I'm done with this row" call — it's what you do when you expect a transaction boundary above you to commit. The repositories were written as if the DI layer or the request handler would handle the commit. The DI layer (`get_db`) was written as a bare passthrough:
+
+```python
+async def get_db():
+    async for session in get_session():
+        yield session      # ← no commit, no rollback
+```
+
+A passthrough that never commits. Each layer assumed the layer above would do it: the repository assumed the service or DI would commit, the DI assumed the session would persist on close. Neither happened. This is the same "each layer assumed the layer below had it" shape from Part 4 — but inverted: here each layer assumed the layer *above* would finish the job.
+
+**And the script was the escape hatch.** `import_papers.py` commits explicitly because it's a script — it has to manage its own transaction. Its success proved persistence was possible, which made the API's silence look like a configuration detail rather than an absence. The working path masked the broken one.
+
+Let me be honest about what this means. A knowledge workspace whose API can't store anything is not a product — it's a demo that returns status codes. The 26 papers in the knowledge base came from the script, so demos of retrieval worked. But any real user action — creating an article, tagging a document — would have "succeeded" and disappeared. The system was one commit call away from being real, and that call was missing from every layer.
+
+**So here's the honest summary: the write path wasn't broken — it was unfinished. Every layer of the save path existed and worked, except the one step that makes a write real: the commit. And it survived because the working script masked the broken API, and the tests verified behavior at the wrong altitude.** The fix wasn't a repair — it was adding the transaction boundary that the architecture had always assumed existed.
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the missing commit — I needed one black-box request. I used the knowledge base to check whether "verification must ask the system directly" was my finding or established fact. It's established fact, and it's the exact principle that caught this bug.
+
+**The literature describes the requirement; the code reveals the violation.**
+
+- **SelfCheckGPT** (2303.08896, retrieved at similarity 0.776) is the sharpest example: it detects hallucination by *black-box sampling* — asking the model to re-generate the answer and comparing, rather than inspecting its internals. The principle: a system's claim is verified by asking it again and checking, not by trusting its internal state. My black-box API test did the same to my own system: it asked "what did you store?" and got a different answer than "what did you create?"
+- **Chain of Verification (CoVe)** (2309.11495, retrieved at similarity 0.758) is the other: verification is an explicit step that exposes where the first pass was wrong. The API's create was the first pass; the GET was the verification; the mismatch was the hallucination — except the hallucination was in the persistence layer, not the LLM.
+
+Two different mechanisms, one shared principle: **a system's claim is only as real as what a direct check confirms.** The papers apply this to LLM output; my code read applies it to API behavior. The 201 that never persisted is the software equivalent of a confident hallucination — same shape, different layer. That gap is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, the fix is one transaction boundary — and it was already shipped:
+
+```python
+async def get_db():
+    async for session in get_session():
+        try:
+            yield session
+            await session.commit()          # ← the missing line
+        except Exception:
+            await session.rollback()
+            raise
+```
+
+One `commit()` on success, one `rollback()` on failure. This is the standard FastAPI request-scoped transaction, and it fixes every write endpoint at once — articles, tags, documents, processing — because they all flow through the same `get_db` dependency.
+
+The deeper fix is the test that caught it:
+
+```python
+# tests/e2e/test_api_pipeline.py
+async def test_full_pipeline_via_http_api(db_ready):
+    # POST /articles → PUT content → GET → DELETE, all through real HTTP + real DB
+    resp = await ac.post("/api/v1/articles", json={"title": "demo"})
+    article_id = resp.json()["data"]["id"]
+    resp = await ac.get(f"/api/v1/articles/{article_id}")
+    assert resp.status_code == 200     # ← would have caught the 404 every time
+```
+
+**Validation — the round-trip test.** The fix isn't real until this passes:
+
+```text
+1. POST /articles → 201 with id
+2. GET  /articles/{id} → 200 with the created row
+3. PUT  /articles/{id} (content) → 200
+4. DELETE /articles/{id} → 204
+5. Repeat — the row must not exist afterward
+```
+
+Before the fix, step 2 returns 404 every time. After the fix, the write path is real. This one test is the acceptance criteria for a storage system: **a write isn't finished when the API returns success — it's finished when a subsequent read returns what the write claimed.**
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The architecture around the missing commit was sound:
+
+- **The repository pattern held.** Services depended on domain interfaces, not SQLAlchemy. The fix — adding a transaction to the DI layer — touched one file, because the repositories were already correctly abstracted. The architecture didn't cause the bug; the missing transaction boundary did.
+- **The session factory was correct.** `async with async_session()` with `expire_on_commit=False` is the right pattern; it just needed a committing dependency around it.
+- **The script was honest.** `import_papers.py` commits explicitly because scripts must manage their own transactions. Its existence is what made the API's absence visible once you looked.
+
+Why does this matter? Because it shows the persistence design was *almost* right — one transaction boundary away from correct. The bug wasn't architectural rot; it was a missing final step that every layer assumed another layer would provide.
+
+## Lessons Learned
+
+1. **A status code is a claim, not a fact.** 201 Created means "I created it." Whether it's true is a separate question, answered only by asking the system what it stored. My API was polite and wrong for the entire write path.
+
+2. **The working path masks the broken one.** The script's explicit commit made the knowledge base real, which made the API's silence invisible. A system can have one working persistence path and one broken one, and the working one hides the other. Check every path, not the one that demonstrably works.
+
+3. **Test at the altitude where the bug lives.** Mocked unit tests verify "the service calls save." Read-only E2E tests verify "search works." Neither can see "the API never persists." The black-box round-trip test — real HTTP, real database, write then read — is the only altitude that catches a missing commit. The papers confirm the principle: SelfCheckGPT verifies by asking the model again, not by inspecting its internals.
+
+4. **A missing boundary is invisible until you check the other end.** The repositories flushed correctly, the session closed correctly, the handler returned correctly. Every layer's contract was honored, and the data still vanished. `flush()` is not `commit()` — and "send to transaction" is not "make durable."
+
+5. **The papers confirm the principle; the code found the gap.** "Claims must be verified by direct check" is established fact (SelfCheckGPT through black-box sampling, CoVe through verification chains). The missing `commit()` is my finding — code → conclusion → papers → validation, in that order.
+
+## Key Takeaways
+
+- **LuoBlog's API write path had zero commit() calls.** Repositories flushed to a transaction; the session's exit rolled it back; every "successful" write vanished.
+- **POST returned 201; GET returned 404.** The mismatch was immediate, deterministic, and invisible to 184 unit tests.
+- **The script masked the bug.** `import_papers.py` commits explicitly, so the knowledge base had data — proving persistence worked, while the API path didn't.
+- **The fix is one transaction boundary.** `get_db` with commit-on-success / rollback-on-failure fixes every write endpoint at once.
+- **The black-box round-trip test is the acceptance criteria.** A write isn't finished when the API returns success; it's finished when a subsequent read returns what the write claimed.
+- **The papers validate the principle; they didn't inspire the finding.** SelfCheckGPT (0.776) and CoVe (0.758) confirm direct verification catches what internal inspection misses. The missing commit is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** The write path works — POST returns 201, so the article was stored.
+- **Evidence collected:** `commit()` appears zero times in `apps/api/src` (grep); `flush()` appears 14 times across repositories; `get_session` uses `async with` which rolls back uncommitted transactions on exit; `import_papers.py:121` commits explicitly (the counterexample); the E2E round-trip test fails at GET with 404 while POST returns 201; the test suite was 184 unit tests (mocked repos) + 5 read-only E2E tests.
+- **Final conclusion:** The API write path never persisted anything — repositories flushed to a transaction that the session always rolled back, while the API returned success. A black-box round-trip test caught it in one request; 184 mocked/read-only tests could not. Software doesn't ship when the status code is right; it ships when a subsequent read confirms the write. **A 201 that a GET can't find is a hallucination — in the persistence layer, not the LLM.**
+- **Confidence:** High. Every claim is a direct grep or read of the code, plus a reproduced test failure; the fix (commit in `get_db`) is verified by the same test now passing.
+
+## Next Investigation
+
+**Question:** The embedding stack — LuoBlog's knowledge base was indexed with `FastEmbeddingService` (bge-large-en-v1.5, 1024 dimensions), but the agent API layer was configured with `LiteLLMEmbeddingService` (OpenAI, 1536 dimensions). Search queries were embedded in one vector space and matched against an index built in another. Does the production search path still run both, or was it unified?
+
+**Current hypothesis:** Given the pattern, the mismatch was real at discovery time — vector spaces were incompatible and retrieval was silently degraded.
+
+**Confidence:** medium.
+
+**Evidence collected so far:** the knowledge pipeline uses `build_embedder()` (config-driven) after Sprint 1; I haven't re-verified which model the search endpoint actually runs today.
+
+**Open questions:** Is `EMBEDDING_MODE=local` still active in production config? Did any document get indexed with the wrong-dimension model after the fix?
+
+**What I'll check:** the embedding factory, the `.env` config, and whether the search endpoint and the index agree on dimensionality today.
+
+**I'll report back after reading the code.**
