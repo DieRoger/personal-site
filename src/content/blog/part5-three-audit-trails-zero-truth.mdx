@@ -1,0 +1,247 @@
+---
+title: "Three Audit Trails, Zero Truth: How an AI Audit System Lost Its Own Memory"
+description: "Code Archaeology Part 5 — Three Audit Trails, Zero Truth: the ADR specifies append-only audit tables. The code has real PostgreSQL trace stores. The engine runs in-memory. The checkpoint is written but never loaded. For an audit system, the record of what happened is the product — and it evaporates on restart."
+date: "2026-07-20"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+tags: ["Code Archaeology", "Observability", "Audit", "Trace", "Engineering"]
+---
+
+# Three Audit Trails, Zero Truth: How an AI Audit System Lost Its Own Memory
+
+*This is the fifth Code Archaeology investigation. The first found evidence declared but not grounded. The second found branching declared but not executed. The third found a retrieval subsystem declared but not wired. The fourth found a feature that died in transit. This one is the pattern at its most dangerous: the system is an audit product, and the audit trail — the record of what every agent did — is written to an in-memory list that vanishes when the process restarts. The PostgreSQL stores that would persist it exist, are complete, and have zero callers. The checkpoint is saved on every node and loaded by nobody.*
+
+## The Hook
+
+An audit system's output isn't the audit. The *record* is the audit — every step, every input, every decision, traceable after the fact. That's the whole product.
+
+AuditFlow has three layers of audit record: a design doc with append-only tables, a real PostgreSQL implementation, and a runtime that uses neither. The trace lives in a Python list. Restart the process, and the system's memory of what it did is gone.
+
+*Declared, but not durable.* That's the pattern this series keeps uncovering.
+
+Let me show you how I got there.
+
+## The Expectation
+
+My previous investigation ended with a hypothesis about the observability layer: I suspected the audit tables (`agent_execution_log`, `approval_log`, `document_access_log`) were doc-only — designed in ADR-004 but never implemented. That's the natural expectation after finding `approval_log` has zero code references in Part 4.
+
+The reality was subtler and more damning. The PostgreSQL implementation **exists** — `PgTraceStore` and `PgCheckpointStore` are complete, with real table models, real SQL, real `create_all` bootstrapping. The problem isn't that they're missing. It's that nothing constructs them. The engine defaults to in-memory stores, and the in-memory stores do exactly what their name says: hold everything in a list.
+
+So the question became: how does a system whose *product is the record* run with a record that disappears on restart?
+
+## The Investigation
+
+### Search #1: What the Design Says the Record Should Be
+
+ADR-004 is the architecture decision for the audit log. It specifies three append-only tables:
+
+```sql
+CREATE TABLE agent_execution_log (
+CREATE TABLE approval_log (
+CREATE TABLE document_access_log (
+```
+
+With the full append-only treatment: `REVOKE UPDATE, DELETE` at the database level, a CHECK constraint on the approval decision, an `artifact_snapshot` column that freezes the audit context at decision time. The design is explicit that this is an *immutable* record — an auditor must not be able to rewrite what happened.
+
+**Conclusion:** The design specifies a tamper-resistant, append-only audit trail with three tables and database-level write protection.
+
+### Search #2: What the Code Actually Implements
+
+The implementation exists — and it's not what the design specifies. `infrastructure/database/models/workflow.py` defines two tables:
+
+```python
+class ExecutionTraceModel(Base):
+    __tablename__ = "execution_traces"
+    ...
+
+class CheckpointModel(Base):
+    __tablename__ = "workflow_checkpoints"
+    ...
+```
+
+Two tables, not three. Named `execution_traces`/`workflow_checkpoints`, not `agent_execution_log`/`approval_log`/`document_access_log`. And they're ordinary tables — no `REVOKE UPDATE, DELETE`, no append-only protection, no `artifact_snapshot`. An `ExecutionTrace` row can be updated or deleted like any other row.
+
+The corresponding stores are complete: `PgTraceStore` implements `append`/`query`/`replay` with real SQLAlchemy sessions, and `PgCheckpointStore` implements `save`/`load_latest`/`exists`. They even bootstrap their own tables via `Base.metadata.create_all`. This is not a stub — it's a working PostgreSQL persistence layer.
+
+**Conclusion:** The code has a real, complete PostgreSQL persistence implementation — but for different table names, with a different schema, and none of the append-only guarantees the design specifies.
+
+### Search #3: What the Runtime Actually Uses
+
+Now the decisive part. The engine's constructor:
+
+```python
+self._trace_store = trace_store or InMemoryTraceStore()
+self._checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+```
+
+In-memory by default. And the production wiring — `_get_engine()` in the workflow router — constructs the engine with only a registry:
+
+```python
+def _get_engine() -> WorkflowEngine:
+    registry = AgentRegistry()
+    ...register five agents...
+    return WorkflowEngine(registry)
+```
+
+No `trace_store=`, no `checkpoint_store=`. So every production engine runs with `InMemoryTraceStore` and `InMemoryCheckpointStore`. I grepped the entire `backend/src` for `PgTraceStore` and `PgCheckpointStore`: the only matches are their own definitions. **Zero callers.** The PostgreSQL persistence layer is complete, correct, and unused.
+
+And here's what "in-memory" means for an audit system:
+
+```python
+class InMemoryTraceStore(TraceStore):
+    def __init__(self):
+        self._traces: list[ExecutionTrace] = []
+
+    async def append(self, trace: ExecutionTrace) -> None:
+        self._traces.append(trace)
+```
+
+A Python list. Every workflow execution appends its traces to a list that lives in the process's heap. The `/trace` endpoint queries that list. It works — as long as the process is alive. Restart the API server, and `_states`, `_graphs`, `_traces`, `_checkpoints` — the entire memory of every audit that ever ran — are gone.
+
+**Conclusion:** The runtime uses in-memory stores by default, and nothing in production wires the PostgreSQL stores. The audit record is process-lifetime-only.
+
+### Search #4: The Checkpoint That Nobody Loads
+
+The engine saves a checkpoint after every node:
+
+```python
+async def _save_checkpoint(self, workflow_id: str, agent_name: str, state: WorkflowState) -> None:
+    checkpoint = Checkpoint(...)
+    await self._checkpoint_store.save(checkpoint)
+```
+
+Called at `engine.py:161` after each successful node. So checkpoints are *written*. The question is whether anything reads them. I grepped for `load_latest` — the method that would resume a workflow from its last checkpoint:
+
+One match: the definition in `store.py` (and the ABC declaration). **Zero callers.** The engine never calls `load_latest`. There is no resume path. A workflow that fails mid-run cannot be restarted from its checkpoint, because nothing in the codebase ever reads a checkpoint back.
+
+This is the pattern's most revealing variant: the subsystem isn't entirely dead — it's **half-wired**. `save` is called. `load` is never called. The write path exists, the read path doesn't. That's not "unused code"; that's a feature that was built to checkpoint and then nobody implemented the recovery.
+
+**Conclusion:** Checkpoints are written after every node and never read. The "resumability" the engine claims is a one-way door: state goes in, nothing comes out.
+
+## The Discovery
+
+Here's the full map of the observability layer, layer by layer:
+
+| Layer | What it says | Reality |
+|---|---|---|
+| ADR-004 design | Append-only `agent_execution_log`/`approval_log`/`document_access_log`, REVOKE UPDATE/DELETE, `artifact_snapshot` | Three tables, tamper-resistant |
+| Implementation | `execution_traces`/`workflow_checkpoints` models + `PgTraceStore`/`PgCheckpointStore` | Real, complete, **zero callers** |
+| Runtime | `InMemoryTraceStore`/`InMemoryCheckpointStore` | Trace = Python list; dies with the process |
+| Checkpoint | `_save_checkpoint` called after every node | **`load_latest` never called** — no resume path |
+
+Four layers, and the gap between them isn't a missing feature — it's a **disconnect between three descriptions of the same thing**. The design describes an immutable audit trail. The code implements a mutable trace store. The runtime runs neither — it uses a list. Three layers, three different answers to "where does the record live?": in the database (designed), in PostgreSQL (implemented), in a Python list (actual).
+
+And the checkpoint is the subtlest lie of all. It *looks* like resumability — the engine writes a checkpoint after every node, the `CheckpointModel` table exists, the `load_latest` method is implemented. Everything about the read path exists except the call. A reviewer skimming the engine would write "checkpointing implemented." A reviewer reading for callers finds the recovery path is a ghost.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The obvious question: why would an audit product run with no persistent audit record?
+
+**The design and the implementation were written by different generations.** ADR-004 is a careful, opinionated document — it makes security decisions (`REVOKE UPDATE, DELETE`), it freezes audit context (`artifact_snapshot`), it names three tables with distinct responsibilities. This is the *target* architecture. The `PgTraceStore` implementation is a later, simpler pass: one table for traces, one for checkpoints, no append-only machinery. Someone implemented "persistence" without porting the design's guarantees. The table names don't even match the ADR.
+
+**The runtime was built before persistence was wired.** `_get_engine()` constructs the engine with just a registry. It's the minimal path to a working demo — in-memory state, in-memory traces, everything ephemeral because the demo runs in one process. The demo worked, so the wiring stayed. The PostgreSQL stores were written — probably in the same session, as `PgTraceStore` — but the one line that would connect them to the engine (`trace_store=PgTraceStore()`) was never added to `_get_engine`.
+
+**And checkpoint recovery is a design assumption nobody tested.** The engine *saves* checkpoints because the state machine spec says workflows resume. But resume requires someone to call `load_latest` and re-enter the graph — a non-trivial amount of code. The save side was cheap, so it shipped. The load side was real work, so it didn't. The result is the most dangerous kind of half-feature: it writes data that nothing will ever read, and the write itself is wasted I/O.
+
+Let me be honest about what this means. For a normal product, losing traces on restart is a bug — annoying, fixable. For an audit product, it's a category error. The audit opinion depends on being able to reconstruct what the agents saw and did. An in-memory trace store is the software equivalent of an auditor taking notes in their head and going home. The system *can* do it right — `PgTraceStore` is sitting right there. It just doesn't.
+
+**So here's the honest summary: the audit trail isn't missing. It's implemented in three places that never talk to each other — designed in the ADR, built in the store, and bypassed in the runtime. The record of what happened is a Python list that evaporates on restart.** The fix isn't "build persistence" — it's "connect the persistence that already exists, then decide whether the append-only design is worth porting."
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the evaporating audit trail — I needed `grep` and one read of the engine constructor. I used the knowledge base to check whether "observability is a requirement, not a feature" was my finding or established fact. It's established fact.
+
+**The literature describes the requirement; the code reveals the violation.** AgentBench (2308.03688, retrieved at similarity 0.717) frames LLM-as-agent evaluation as a *Partially Observable Markov Decision Process* — an agent system is partially observable by nature, so its value depends on how much behavior you can see. AutoGen (2308.08155, retrieved at similarity 0.719) makes the conversation itself the observable record — replayable by design. Both describe systems where the record is structural. An audit system whose record dies with the process is the violation: the evidence is no evidence at all.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, three concrete changes, in order of value:
+
+1. **Wire `PgTraceStore` and `PgCheckpointStore` into `_get_engine()`.** The stores are complete; the change is two constructor arguments. Before:
+
+```python
+def _get_engine() -> WorkflowEngine:
+    registry = AgentRegistry()
+    ...register five agents...
+    return WorkflowEngine(registry)          # ← in-memory stores
+```
+
+After:
+
+```python
+def _get_engine() -> WorkflowEngine:
+    registry = AgentRegistry()
+    ...register five agents...
+    return WorkflowEngine(
+        registry,
+        trace_store=PgTraceStore(db_url),
+        checkpoint_store=PgCheckpointStore(db_url),
+    )
+```
+
+That's the whole fix for the persistence half — the product's core promise, connected by wiring code that exists.
+
+2. **Add the resume path.** `_save_checkpoint` is called; `load_latest` is never called. Implement a `start()` that checks for an existing checkpoint and re-enters the graph at the last completed node. This is the actual work — the save side was the cheap 20%, the load side is the 80% that turns checkpoints from wasted I/O into resumability.
+
+3. **Reconcile the three layers.** Either port the ADR-004 append-only guarantees (REVOKE UPDATE/DELETE, `artifact_snapshot`, the three-table split) onto the real implementation, or rewrite the ADR to match what shipped. Right now three documents describe three different audit trails — the ADR, the model, and the runtime. Pick one truth. For an audit product, the honest move is the append-only design — but the immediate priority is that the record survives a restart.
+
+**Validation — the restart test.** The fix isn't real until this passes:
+
+```text
+1. Start a workflow            → traces written to PostgreSQL
+2. Kill the API process        → the in-memory copies die
+3. Restart the API             → `PgTraceStore` reconnects
+4. Query `/trace` for the workflow
+5. Assert the full history is there
+```
+
+Before the fix, step 4 returns nothing — the history died in step 2. After the fix, step 5 is the product working as designed. This one test is the audit trail's acceptance criteria: **an audit trail isn't finished when the model is defined — it's finished when the record survives the process that wrote it.**
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. `PgTraceStore` is genuinely production-shaped — real SQLAlchemy sessions, JSON-serialized input/output, a `replay` method that reconstructs the run. `ExecutionTrace` records everything an auditor needs: `event_type`, `step`, `input`, `output`, `duration_ms`, `error`. And ADR-004's append-only design — REVOKE UPDATE/DELETE, `artifact_snapshot` — is exactly what an audit product should have. The problem isn't the parts; it's that three good layers were built independently and never connected, and the demo's in-memory default quietly became the production behavior.
+
+## Lessons Learned
+
+1. **The most dangerous dead code has callers.** `PgTraceStore` has zero callers and is easy to spot. `_save_checkpoint` is worse: it's *called* — the write path is live — but the read path (`load_latest`) never is. Half-wired features are the silent killers: they look active, they write data, and nothing ever comes back out.
+
+2. **In-memory defaults become production behavior.** `InMemoryTraceStore` wasn't a placeholder — it was the demo default that nobody overrode. The engine's `or InMemoryTraceStore()` is a reasonable fallback that became the product. For an audit system, the default *must* be the durable store.
+
+3. **Three layers, three truths.** The ADR says one thing, the models say another, the runtime does a third. None of them is wrong in isolation; together they're a lie. Documentation drift isn't a documentation problem — it's an architecture problem that documents merely expose.
+
+4. **Restart is the ultimate audit test.** Every design that survives a process restart deserves scrutiny; every claim that dies with it was never real. If you can't lose the process and still answer "what happened?", you don't have an audit trail.
+
+5. **The papers confirm the principle; the code found the gap.** "Observability is a requirement for agent systems" is established fact (AgentBench through POMDP, AutoGen through conversation-as-record). The store with zero callers and the checkpoint nobody loads is my finding — code → conclusion → papers → validation, in that order.
+
+## Key Takeaways
+
+- **The audit record lives in a Python list.** The engine defaults to `InMemoryTraceStore`; restarting the process erases every workflow's history.
+- **`PgTraceStore` and `PgCheckpointStore` are complete and have zero callers.** The persistence layer exists; the wiring doesn't.
+- **Checkpoints are written after every node and never read.** `load_latest` has zero callers — resumability is a one-way door.
+- **The design, the code, and the runtime describe three different audit trails.** ADR-004's append-only tables, the `execution_traces` model, and the in-memory list never meet.
+- **For an audit product, this isn't a bug — it's a category error.** The record is the product, and the product evaporates on restart.
+- **The papers validate the principle; they didn't inspire the finding.** AgentBench (0.717) and AutoGen (0.719) confirm observability is structural. The un-wired store is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** The audit tables are doc-only — designed in ADR-004 but never implemented (from Part 4's `approval_log` finding).
+- **Evidence collected:** `PgTraceStore`/`PgCheckpointStore` exist with full implementations but zero callers in `backend/src` (grep); `_get_engine()` constructs `WorkflowEngine(registry)` with no stores, defaulting to `InMemoryTraceStore`/`InMemoryCheckpointStore`; `InMemoryTraceStore.append` is `self._traces.append(trace)` (store.py); `_save_checkpoint` is called at engine.py:161 but `load_latest` has zero callers; model tables are `execution_traces`/`workflow_checkpoints`, not the ADR's `agent_execution_log`/`approval_log`/`document_access_log`.
+- **Final conclusion:** The audit trail is implemented in three layers that never connect — designed (ADR), built (`PgTraceStore`), and bypassed (in-memory default). The record of what happened evaporates on restart, and checkpoints are written but never loaded. Software doesn't ship when the store exists; it ships when the store is the default. **An audit trail isn't a table — it's a survival guarantee.**
+- **Confidence:** High. Every claim is a direct grep or read of the code, design docs, and engine constructor; the only unverified edge is whether some external caller outside `backend/src` constructs the PG stores (none found in-repo).
+
+## Next Investigation
+
+**Question:** The event system — `domain/events.py` defines nine typed workflow events, and the engine emits them through `_emit`. But events.py:5 says "Event 不可变，Append-Only 写入 agent_execution_log" — the event docstring claims events are persisted to the audit table. Is there any path where an emitted event actually reaches a durable log, or is every `event_*` function a fire-and-forget notification to in-memory listeners?
+
+**Current hypothesis:** The event system is real as a pub/sub mechanism (listeners get called) but the "Append-Only 写入" claim in the docstring is aspirational — events die with the process like everything else.
+
+**Confidence:** medium.
+
+**Evidence collected so far:** `event_*` functions construct `WorkflowEvent` objects; `_emit` iterates `self._event_listeners`; I haven't found a listener that persists events to a store.
+
+**Open questions:** Is there a WebSocket handler that bridges events to clients, and does it write anything durable? Does any code path call the events' `to_storage_format` method?
+
+**What I'll check:** `domain/events.py` in full, any WebSocket handlers, and whether `event_*` events are ever written to the store that their docstring names.
+
+**I'll report back after reading the code.**
