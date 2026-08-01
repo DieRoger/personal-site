@@ -1,28 +1,14 @@
 ---
-title: "Untitled"
-description: ""
+title: "The Third Approval Button Never Existed: How MODIFY Died on the Way From Design to UI"
+description: "Code Archaeology Part 4 鈥?Three Approval Buttons, Two of Them Real: the workflow engine declares a three-way approval decision 鈥?APPROVED, REJECTED, MODIFY. The frontend renders two buttons. The API doesn't carry modifications. The engine ignores it. And request_approval has no callers at all. The third option is a phantom."
 date: "2026-07-12"
-readingTime: "15 min read"
+readingTime: "15 min"
 source: original
 series: Code Archaeology
-tags: ["Code Archaeology", "HITL", "Approval", "Engineering", "Agents"]
 part: 4
 impact: medium
 finding: "The three-way approval decision survives only in the enum — the frontend renders two buttons, the API can't carry modifications."
----
-
-
-﻿---
-title: "The Third Approval Button Never Existed: How MODIFY Died on the Way From Design to UI"
-description: "Code Archaeology Part 4 鈥?Three Approval Buttons, Two of Them Real: the workflow engine declares a three-way approval decision 鈥?APPROVED, REJECTED, MODIFY. The frontend renders two buttons. The API doesn't carry modifications. The engine ignores it. And request_approval has no callers at all. The third option is a phantom."
-date: 2026-08-01
-tags: [Agent, Workflow, HITL, Approval, Engineering, Audit, LLM]
-categories: [Code Archaeology, Engineering Investigation]
-slug: auditflow-approval-modify-declared-not-real
-draft: false
-author: Luo Runjie
-readingTime: 15 min
-difficulty: advanced
+tags: ["Code Archaeology", "HITL", "Approval", "Engineering", "Agents"]
 ---
 
 # The Third Approval Button Never Existed: How MODIFY Died on the Way From Design to UI
