@@ -22,14 +22,14 @@ export const projects: Project[] = [
   {
     slug: 'auditflow',
     title: 'AuditFlow',
-    tagline: 'AI-powered Intelligent Auditing Platform',
-    description: 'A production-level document intelligence platform that automates audit workflows using LLMs, RAG, and multi-agent orchestration.',
+    tagline: 'AI-powered Audit Intelligence & Reliability Research',
+    description: 'An AI system exploring how autonomous agents can produce verifiable decisions — through document intelligence, RAG, evidence grounding, and workflow observability.',
     status: 'active',
     featured: true,
     rating: 5,
     techStack: ['Python', 'FastAPI', 'LangGraph', 'PGVector', 'Docker', 'DeepSeek', 'PostgreSQL', 'Redis', 'Next.js', 'MinIO'],
     github: 'https://github.com/DieRoger/auditflow',
-    overview: 'AuditFlow is an end-to-end intelligent auditing platform that processes, analyzes, and extracts insights from large volumes of documents. It combines OCR, intelligent chunking, vector search, and LLM-powered agents to automate the entire audit workflow.',
+    overview: 'AuditFlow is an AI audit intelligence platform exploring reliable agent workflows. It combines document processing, RAG-based retrieval, evidence grounding, and multi-agent orchestration — and the Code Archaeology series documents how its design, implementation, and runtime diverge.',
     timeline: [
       { version: 'v0.1', label: 'Document Parser', date: '2025-Q1' },
       { version: 'v0.2', label: 'Embedding Pipeline', date: '2025-Q2' },
