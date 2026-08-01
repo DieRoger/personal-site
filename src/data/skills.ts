@@ -27,28 +27,33 @@ export const skillGroups: SkillGroup[] = [
 ]
 
 export const interests = [
-  { title: 'Artificial Intelligence', description: 'Building intelligent systems that learn and adapt' },
-  { title: 'LLMs', description: 'Large language model application and fine-tuning' },
-  { title: 'AI Agents', description: 'Multi-agent systems and autonomous workflows' },
-  { title: 'Document Intelligence', description: 'OCR, chunking, retrieval, and knowledge graphs' },
-  { title: 'Cloud Native', description: 'Containerized, scalable microservices architecture' },
-  { title: 'Backend Engineering', description: 'Designing robust and performant APIs' },
+  { title: 'AI Reliability', description: 'Investigating why AI systems fail and how to make them trustworthy' },
+  { title: 'Agent Evaluation', description: 'Measuring what AI agents actually do, not what they claim' },
+  { title: 'Observability', description: 'Building systems where every AI decision is traceable' },
+  { title: 'Human-in-the-loop', description: 'Designing the points where humans should control AI decisions' },
+  { title: 'Retrieval-Augmented Generation', description: 'Grounding AI output in verifiable sources' },
+  { title: 'Evidence & Auditability', description: 'Systems that can prove what happened, after the fact' },
 ]
 
 export const featuredSkills = [
   {
-    title: 'AI Agents',
-    techStack: ['LangGraph', 'LLM', 'Multi-Agent'],
-    description: 'Multi-agent workflows powered by LLMs for complex task automation.',
+    title: 'Evidence',
+    techStack: ['RAG', 'Grounding', 'Citation'],
+    description: 'Can AI explain what it did? Building systems where every claim traces to a source.',
   },
   {
-    title: 'Document Intelligence',
-    techStack: ['OCR', 'RAG', 'Vector Search'],
-    description: 'End-to-end document processing with intelligent retrieval and analysis.',
+    title: 'Evaluation',
+    techStack: ['Model Evaluation', 'AgentBench', 'Benchmarks'],
+    description: 'Can we measure AI quality? Designing evaluation workflows for agent reliability.',
   },
   {
-    title: 'Software Engineering',
-    techStack: ['FastAPI', 'Docker', 'Cloud Native'],
-    description: 'Building production-grade backend systems with modern architecture.',
+    title: 'Observability',
+    techStack: ['Traces', 'Events', 'Audit Logs'],
+    description: 'Can we trace AI behavior? Investigating why agent systems lose their own history.',
+  },
+  {
+    title: 'Human Control',
+    techStack: ['HITL', 'Approval', 'Workflow'],
+    description: 'Where should humans decide? Designing human-in-the-loop gates that actually work.',
   },
 ]
