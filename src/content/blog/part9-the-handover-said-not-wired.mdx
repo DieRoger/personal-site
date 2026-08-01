@@ -1,0 +1,245 @@
+---
+title: "The Handover Said 'Not Wired.' The Code Was Wired — to the Wrong Embedding."
+description: "Code Archaeology Part 9 — Grounding Declared, Not Verified: the handover doc said the Review Agent wasn't connected to the Grounding Checker. It was — and it had been from the start. But it was wired with the wrong embedding model, so the grounding it produced was computed in a vector space that couldn't match the knowledge base. The interface was connected; the semantics never were."
+date: "2026-08-02"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+part: 9
+impact: high
+finding: "The handover doc said the Review Agent wasn't wired to grounding — it was wired from the start, but to the wrong embedding model."
+tags: ["Code Archaeology", "Grounding", "Evidence", "Review", "Embedding", "Engineering"]
+---
+
+# The Handover Said 'Not Wired.' The Code Was Wired — to the Wrong Embedding.
+
+*This is the ninth Code Archaeology investigation, and the third on my own system. Part 7 found the API never persisted. Part 8 found search ran in two vector spaces. This one is what happens when you trust the documentation about your own code: the handover document said, four times, that the Review Agent was not connected to the Grounding Checker. It was connected. It had been connected from the first commit. But it was connected with the wrong embedding model — the 1536-dimension API model from Part 8 — so the grounding it produced compared claims against the knowledge base in a vector space that couldn't match the 1024-dimension index. The interface was wired. The semantics never were.*
+
+## The Hook
+
+The handover document said, explicitly and repeatedly: "Review Agent 接 Grounding Checker（代码支持但未接线）" — the code supports it, but it's not wired.
+
+The code was wired. `_build_review_agent` constructed a `GroundingChecker` and passed it to the `ReviewAgent`:
+
+```python
+checker = GroundingChecker(embedder=embedder, chunk_repo=chunk_repo, doc_repo=doc_repo)
+return ReviewAgent(grounding_checker=checker)
+```
+
+That's not "未接线." That's the feature, working, at the call site the doc said was empty.
+
+But here's the part that matters more than the documentation error: the `embedder` that checker was built with was the *wrong one*. It was `LiteLLMEmbeddingService` — the 1536-dimension API model from Part 8. The knowledge base is 1024 dimensions. So the Review Agent's grounding — the thing that was supposed to make Evidence Coverage real — was comparing claims against chunks in a vector space that could never match them.
+
+*Declared, but not verified.* That's the pattern this series keeps uncovering. The interface was connected; the semantics never were.
+
+Let me show you how I got there.
+
+## The Expectation
+
+I inherited this codebase from my own previous session. The handover document was my map — it told me what was done and what wasn't. It said the Review Agent's grounding was one of the unfinished items: "代码支持但未接线" — the code supports it, but it's not wired. So I expected to find an empty call site: a `ReviewAgent(grounding_checker=None)` or a missing import.
+
+That expectation was wrong in the most instructive way. The call site was not empty — it was fully wired, with a complete `GroundingChecker` built from an embedder, a chunk repository, and a document repository. The handover had been wrong about the interface.
+
+But the handover was *right* about the outcome. It said "Evidence Coverage 仍是 LLM 猜测" — the Evidence Coverage score is still LLM guessing. And that was true — not because the checker wasn't wired, but because the checker was wired to the wrong embedding. The doc's conclusion was accidentally correct; its diagnosis was completely wrong.
+
+## The Investigation
+
+### Search #1: The Handover's Claim
+
+The handover document made the claim four times:
+
+```text
+L62:  - **Review Agent 接 Grounding Checker**（代码支持但未接线）
+L208: ## 7. Review Agent 接 Grounding Checker（设计但未接线）
+L211:  - **影响**：**未接线**——`api/routers/agents.py` 的 `_build_review_agent` 没有传 checker
+L324: 6. **Review Agent 未接 Grounding** — 设计支持但实际未用
+```
+
+Four statements, all asserting the same thing: the Review Agent is not connected to the Grounding Checker. L211 is the most specific — it names the exact function and says it doesn't pass the checker.
+
+**Conclusion:** The documentation claims, four times, that the wiring is missing — and names the exact call site that's supposedly empty.
+
+### Search #2: The Actual Call Site
+
+The call site the doc said was empty:
+
+```python
+# api/routers/agents.py
+def _build_review_agent(db: AsyncSession) -> ReviewAgent:
+    chunk_repo = ChunkRepository(db)
+    doc_repo = DocumentRepository(db)
+    embedder = _get_embedder()                                   # ← which embedder?
+    checker = GroundingChecker(embedder=embedder, chunk_repo=chunk_repo, doc_repo=doc_repo)
+    return ReviewAgent(grounding_checker=checker)                # ← WIRED
+```
+
+Not empty. Not "supports but not wired." Fully constructed: a `GroundingChecker` with an embedder and two repositories, passed into the `ReviewAgent`. The review path then uses it:
+
+```python
+# services/review.py
+if self._checker:
+    report = await self._checker.verify(article_text)
+    grounding_context = f"... Verified: {report.grounded_claims} ... Evidence coverage: {report.evidence_coverage:.0%} ..."
+```
+
+So the Review Agent *does* run the Grounding Checker, and the grounding data *does* reach the LLM prompt. The handover's claim about the interface is simply false. The wiring has been there since the feature was added.
+
+**Conclusion:** The call site is fully wired. The Grounding Checker runs, and its results reach the Review Agent's prompt. The documentation is wrong about the interface.
+
+### Search #3: The Embedder That Made It Wrong
+
+So the handover was wrong about the wiring. Was it wrong about the outcome? The doc claimed "Evidence Coverage 仍是 LLM 猜测" — the coverage score is still LLM guessing. For that to be false, the grounding would have to be *real* — computed in a space that could actually match the knowledge base.
+
+The embedder:
+
+```python
+# before the fix
+def _get_embedder() -> EmbeddingService:
+    return LiteLLMEmbeddingService()      # ← text-embedding-3-small, 1536 dim
+```
+
+This is the exact embedder from Part 8. The knowledge base is indexed with `FastEmbeddingService` — bge-large-en-v1.5, 1024 dimensions. The Grounding Checker embeds each claim with the 1536-dimension model and searches the 1024-dimension index. The `MIN_CONFIDENCE = 0.65` threshold — the number that decides "grounded" vs "unverified" — is applied to a similarity score computed between incompatible vector spaces.
+
+So the grounding *ran*, but it ran wrong. Every claim got a "similarity score" that meant nothing — either PGVector rejected the dimension mismatch outright, or it returned a cosine similarity between vectors from different models, which is a number without meaning. The `grounded_claims` count and the `evidence_coverage` percentage fed into the Review Agent's prompt were computed from that meaningless number.
+
+**Conclusion:** The grounding was wired but broken — the checker ran, but in the wrong vector space, so its "evidence coverage" was as unreliable as the LLM guessing the doc assumed it was.
+
+### Search #4: Why the Documentation Was Wrong About Both
+
+The handover said "not wired" and "LLM guessing." The code was wired and produced garbage grounding. Why did the doc get both wrong?
+
+The handover was written from the *symptom*: the review feature's evidence coverage didn't look right, and the author concluded the checker must not be wired. That's a reasonable inference from a wrong premise. The actual cause — a wired checker using the wrong embedder — was invisible from the symptom, because both "not wired" and "wired-to-wrong-embedding" produce the same observable result: evidence coverage that doesn't match reality.
+
+The deeper issue: the doc described *intent* ("设计但未接线" — designed but not wired), and the code had evolved past the intent. The wiring was added when the feature was built, but the embedder at that time was the wrong one. The doc froze the *design* state; the code had moved to a *broken-implementation* state, which looks identical from the outside.
+
+**Conclusion:** The documentation confused "doesn't work" with "not built." The wiring existed; the semantics didn't. The doc described the outcome correctly and the cause incorrectly — a failure mode that's worse than being merely wrong.
+
+## The Discovery
+
+Here's the full map, layer by layer:
+
+| Layer | The doc said | The code was |
+|---|---|---|
+| Interface (`_build_review_agent`) | Not wired (L211) | **Wired** — `GroundingChecker` passed to `ReviewAgent` |
+| Runtime (`review.py`) | — | **Runs** — `verify()` called, results injected into prompt |
+| Embedder (`_get_embedder`) | — | **Wrong** — `LiteLLMEmbeddingService`, 1536 dim vs 1024-dim index |
+| Threshold (`MIN_CONFIDENCE=0.65`) | — | **Meaningless** — applied to cross-space similarity |
+| Outcome (Evidence Coverage) | "LLM 猜测" | **Accidentally correct** — garbage in, garbage out |
+
+Four layers. The documentation was wrong about the first two (the wiring existed and ran), right about the last one (the coverage was indeed unreliable), and silent about the two that mattered (the wrong embedder and the meaningless threshold). The interface was connected; the semantics never were.
+
+This is the series' most instructive failure mode. Part 7's bug was an *absence* — no commit. Part 8's was a *mismatch* — two vector spaces. This one is a *false negative in the documentation*: the doc said the feature wasn't there, which led me to expect an empty call site, which made the actual bug — a wired-but-broken grounding path — harder to see, not easier. The documentation didn't just fail to help; it actively pointed in the wrong direction.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The question isn't "why was the wiring missing" — it wasn't. The question is "why did the documentation say it was, and why did the author believe it?"
+
+**The handover was written from symptoms, not from code.** The author (my previous self) observed that Evidence Coverage didn't look trustworthy and inferred the checker wasn't wired. That's a reasonable diagnostic move — but it skipped the step of reading `_build_review_agent`. The symptom was real; the diagnosis was invented to fit it. The doc's claim about the call site was a guess about the mechanism, not a report of what the code did.
+
+**And the wrong embedder made the symptom indistinguishable from the absence.** "Not wired" and "wired to the wrong model" both produce an unreliable coverage score. From the outside, you can't tell them apart — the fix for one is "add the wiring," the fix for the other is "fix the embedder." The documentation chose the wrong fix by diagnosing the wrong cause.
+
+**The threshold made it worse.** `MIN_CONFIDENCE = 0.65` looks like a real parameter — a tuned boundary between grounded and ungrounded. But a threshold only has meaning if the scores it gates are comparable. Across vector spaces, 0.65 is a random number applied to random numbers. The threshold's *existence* made the broken grounding look calibrated.
+
+Let me be honest about what this means. The system's core differentiator — "Evidence-first, every claim grounded" — depended on this path. The Review Agent was supposed to produce coverage scores backed by real retrieval. It produced scores backed by a vector-space mismatch. The docs said the feature didn't exist; the code said it existed but was broken; the truth was that the *interface* existed and the *semantics* didn't. Only reading the code — and then reading the embedder the code used — revealed all three.
+
+**So here's the honest summary: the Grounding Checker was wired from the start, the documentation said it wasn't, and both were right about the outcome — the coverage was never trustworthy. The wiring existed; the embedding made it meaningless. The interface was connected; the semantics never were.** The fix wasn't "connect the checker" (the doc's implied fix) — it was "give the checker the same embedding model as the index."
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the wired-but-broken grounding — I needed to read the call site and the embedder it used. I used the knowledge base to check whether "grounding must be computed in the same space as the evidence" was my finding or established fact. It's established fact, and it's the entire premise of grounded generation.
+
+**The literature describes the requirement; the code reveals the violation.**
+
+- **Retrieval-Augmented Generation (Lewis et al., 2020)** (2005.11401, retrieved at similarity 0.757) is the origin: grounding is the act of conditioning generation on retrieved context. The entire paradigm assumes the retrieval that grounds the answer is real — it's the "retrieved" part that makes it grounded. Retrieval in a wrong vector space isn't grounding; it's decoration.
+- **Teaching Language Models to Support Answers with Verifiable Quotes** (2203.11147, retrieved at similarity 0.734) is the sharper example: this is GopherCite, where models must support answers with *verifiable quotes* — quotes that resolve to actual sources. The verification is the point: an answer is grounded only if its citations can be checked against real evidence. My system's grounding scores couldn't be checked against the real index — the spaces didn't match.
+- **SelfCheckGPT** (2303.08896, retrieved at similarity 0.788) closes the loop: the way you detect unfounded claims is to *re-verify against the source*, not to trust a similarity number. A 0.65 threshold on cross-space similarity is the opposite of verification — it's a confidence game with no underlying evidence.
+
+Two mechanisms, one shared principle: **grounding is only real if the verification is computed in the same universe as the evidence.** Lewis's RAG conditions on retrieved context; GopherCite verifies quotes against sources; SelfCheckGPT re-checks claims. All assume the space is shared. My system's checker was wired but its scores were computed across incompatible spaces — grounded in form, not in fact. That gap is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, the fix is one line of configuration — the same fix as Part 8, and it was already shipped:
+
+```python
+# infrastructure/embedding/factory.py
+def build_embedder() -> EmbeddingService:
+    if settings.embedding_mode == "local":
+        return FastEmbeddingService()      # bge-large-en-v1.5, 1024 dim
+    return LiteLLMEmbeddingService()
+```
+
+And the review agent now uses it:
+
+```python
+def _build_review_agent(db):
+    embedder = build_embedder()            # ← same model as the index
+    checker = GroundingChecker(embedder=embedder, ...)
+    return ReviewAgent(grounding_checker=checker)
+```
+
+One factory, one embedder, shared by indexing, search, and grounding. The Grounding Checker finally compares claims against chunks in the same vector space the index was built in. The 0.65 threshold finally gates scores that mean something.
+
+**Validation — the grounding round-trip test.** The fix isn't real until this passes:
+
+```text
+1. Write an article claiming something in the knowledge base
+2. Run the Review Agent with the fixed embedder
+3. Assert the grounding report contains the expected grounded claims
+4. Assert the coverage score is computed from real matches, not cross-space noise
+```
+
+Before the fix, step 3 either crashes (dimension mismatch) or returns garbage matches. After the fix, the Review Agent's Evidence Coverage is real — computed in the same space as the evidence. This is the acceptance test grounding was always missing: **a claim isn't grounded when the score says so — it's grounded when the verification provably ran in the same vector space as the evidence.**
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The design around the broken embedder was sound:
+
+- **The wiring was correct in shape.** `GroundingChecker` with `embedder` + repos, injected into `ReviewAgent` — the dependency injection is exactly right. The problem was the value of the injected embedder, not the injection itself.
+- **The prompt integration was right.** `review.py` feeds `grounded_claims`, `ungrounded_claims`, and `evidence_coverage` into the LLM prompt as real data — the mechanism for evidence-backed review exists and works. It just received garbage input.
+- **The threshold was a real attempt.** `MIN_CONFIDENCE = 0.65` shows the intent to separate grounded from ungrounded with a concrete boundary. The intent was sound; the scores it gated weren't.
+
+Why does this matter? Because it shows the *architecture* of evidence-backed review was designed correctly — injection, prompt integration, threshold — and the failure was a single wrong value (the embedder). The system was one correct factory call away from real grounding.
+
+## Lessons Learned
+
+1. **Documentation that says "not built" can be a guess, not a fact.** The handover claimed the wiring was missing four times. It was wrong — the call site was wired. A doc's confidence is not evidence; the call site is. Read the code before believing the map, even your own map.
+
+2. **"Wired to the wrong thing" and "not wired" look identical from the outside.** Both produce an unreliable result. The handover diagnosed the latter; the code had the former. When a feature "doesn't work," the first question isn't "is it connected?" — it's "is it connected to the right thing?"
+
+3. **A threshold on garbage is still garbage.** `MIN_CONFIDENCE = 0.65` made the broken grounding look calibrated. A confidence number only has meaning if the scores it gates are computed in a space that means something. Numbers don't make a system trustworthy; the semantics behind them do.
+
+4. **The doc was accidentally right about the outcome.** "Evidence Coverage 仍是 LLM 猜测" was true — but because the grounding was computed across incompatible spaces, not because it was absent. A correct conclusion from a wrong cause is the most dangerous kind of diagnosis: it stops the investigation at the wrong fix.
+
+5. **The papers confirm the principle; the code found the gap.** "Grounding requires verification in the evidence's space" is established fact (RAG through retrieval conditioning, GopherCite through verifiable quotes, SelfCheckGPT through re-verification). The wired-but-wrong-embedder grounding is my finding — code → conclusion → papers → validation, in that order.
+
+## Key Takeaways
+
+- **The handover said "未接线" four times; the code was wired from the start.** `_build_review_agent` constructed a `GroundingChecker` and passed it to the `ReviewAgent`.
+- **The wiring was real but the embedding was wrong.** The checker used `LiteLLMEmbeddingService` (1536 dim) against a 1024-dimension index — Part 8's mismatch, inherited.
+- **The 0.65 threshold was meaningless.** Applied to cross-space similarity, it produced coverage scores that looked calibrated and meant nothing.
+- **The doc was accidentally right about the outcome.** Evidence Coverage was indeed unreliable — not because the checker was absent, but because it was broken.
+- **The fix is the same as Part 8.** `build_embedder()` gives the checker the same model as the index; grounding finally runs in a real vector space.
+- **The papers validate the principle; they didn't inspire the finding.** RAG (0.757), GopherCite (0.734), and SelfCheckGPT (0.788) confirm grounding must verify in the evidence's space. The wired-but-wrong-embedder is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** The Review Agent isn't wired to the Grounding Checker — the handover said so, four times.
+- **Evidence collected:** `_build_review_agent` constructs `GroundingChecker(embedder=..., chunk_repo=..., doc_repo=...)` and passes it to `ReviewAgent(grounding_checker=checker)` (agents.py); `review.py` calls `verify()` and injects grounded/ungrounded/coverage into the prompt when the checker exists; the pre-fix embedder was `LiteLLMEmbeddingService` (1536 dim, Part 8); `MIN_CONFIDENCE = 0.65` gates the cross-space similarity; the handover claimed "未接线" at L62/L208/L211/L324.
+- **Final conclusion:** The Grounding Checker was wired from the start but computed in the wrong vector space — the interface connected, the semantics never were. The documentation's "not wired" was a symptom-based guess; its "LLM guessing" conclusion was accidentally correct. Software doesn't ship when the interface is wired; it ships when the wiring uses the same semantics as the evidence. **A checker connected to the wrong embedding is not grounding — it's a confidence game with no underlying evidence.**
+- **Confidence:** High. Every claim is a direct read of the call site, the embedder, the threshold, and the handover; the fix (build_embedder) is verified by the same code path now using the correct model.
+
+## Next Investigation
+
+**Question:** The `GroundingStrategy` abstraction exists — `domain/grounding.py` defines the ABC, and `SimilarityGroundingStrategy` is the current implementation. The docs (and my own Part 7-era notes) mention NLI/LLM verification as a future strategy. But the question for the audit trail: does the abstraction actually do anything today, or is it a single-implementation interface — the same "declared for extensibility" shape the series keeps finding?
+
+**Current hypothesis:** The abstraction is real but single-implementation — a strategy pattern with one concrete class, which is fine by Rule of Three but worth verifying it's actually wired through the checker.
+
+**Confidence:** low.
+
+**Evidence collected so far:** `GroundingStrategy` ABC exists; `GroundingChecker` delegates to `SimilarityGroundingStrategy` by default; I haven't traced whether any path can inject a different strategy.
+
+**Open questions:** Can the checker accept a custom strategy, or is the default hardcoded? Is there any test that exercises a non-similarity strategy? Does the strategy abstraction add value today, or is it speculative?
+
+**What I'll check:** the `GroundingChecker` constructor, the strategy wiring, and whether the ABC has more than one implementation.
+
+**I'll report back after reading the code.**
