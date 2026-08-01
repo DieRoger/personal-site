@@ -1,0 +1,218 @@
+---
+title: "Untitled"
+description: ""
+date: "2026-06-20"
+readingTime: "15 min read"
+source: original
+series: Code Archaeology
+tags: ["Code Archaeology", "AI Agents", "Evidence", "Engineering", "RAG"]
+---
+
+﻿---
+title: "I Thought My AI Was Evidence-Driven. The Code Proved Me Wrong."
+description: "Code Archaeology Part 1 鈥?Evidence Without Grounding: an engineering investigation into what I expected to find in the Evidence Agent, what I actually found, and how a hardcoded string changed how I think about grounded AI."
+date: 2026-07-31
+tags: [AI, LLM, Evidence, Hallucination, Audit, Debug, Engineering]
+categories: [Code Archaeology, Engineering Investigation]
+slug: i-thought-my-ai-was-evidence-driven
+draft: false
+author: Luo Runjie
+readingTime: 15 min
+difficulty: intermediate
+---
+
+# I Thought My AI Was Evidence-Driven. The Code Proved Me Wrong.
+
+*This is an engineering investigation 鈥?the first in a series where I read real code, test assumptions, and report what I find. If you want the short version: the architecture document promised a citation chain back to source documents. The code had a hardcoded string. Here's how I found out.*
+
+## The Hook
+
+AuditFlow is an AI system that produces audit opinions. An auditor's opinion has legal consequences, so "trust me" is not an acceptable output format. The architecture document is unambiguous about this: every AI conclusion must carry a citation chain 鈥?claim 鈫?evidence 鈫?source 鈫?document, page, paragraph.
+
+I believed the Evidence Agent implemented this. I had even written a blog post about how the evidence chain works 鈥?without reading the code.
+
+That post was wrong. Finding out how it was wrong is what this article is about.
+
+## The Expectation
+
+Let me be precise about what I expected, because the gap between expectation and reality is the whole point.
+
+I started from the architecture diagram. The diagram showed retrieval feeding the Evidence Agent. So I expected to find, somewhere in `agents/evidence/agent.py`, something like:
+
+- a query embedding step
+- a call into the vector store
+- a top-K of document chunks
+- a claim-matching step over *real retrieved text*
+
+That's what "evidence-driven" means in the diagram. Retrieval happens before the agent matches claims to evidence. Simple, reasonable, expected.
+
+## The Investigation
+
+I opened `agents/evidence/agent.py`. It's about 50 lines 鈥?small enough to read top to bottom in one pass. I expected to walk through a pipeline: take the claims, embed them, query the vector store, get back chunks, match claims to chunks. That's the flow the architecture diagram draws.
+
+### Search #1: The Agent
+
+The file starts with a system prompt constant. Fine. Then a prompt template. Then a Pydantic model for the output schema. Then one function. There is no retrieval call anywhere in it.
+
+```text
+$ grep -rn "retrieve\|vector\|chunk" agents/evidence/
+(no matches)
+```
+
+I searched for "retrieve" across the file. Nothing. I searched for "vector". Nothing. I searched for "chunk". Nothing. Three searches, three empty results 鈥?which is a strange experience when the architecture diagram showed retrieval feeding this exact agent.
+
+### Search #2: The Workflow
+
+Maybe retrieval happened one layer above? The workflow orchestrates agents. Perhaps the Evidence Agent receives pre-retrieved chunks in its request context, assembled by the workflow engine. That would be a reasonable design: retrieval as an orchestration concern, not an agent concern. I opened the workflow definition.
+
+The workflow's evidence node takes an `input_mapping` and a `context` 鈥?which *is* assembled from upstream results. For a moment I thought I'd found it: the chunks must be in the context. But reading the actual request construction, the context is built from `state.agent_results` 鈥?the previous agents' outputs. The planner produces a plan. The knowledge agent produces standards analysis. There's no document retrieval step in the chain before the evidence agent runs.
+
+Only then did I realize: **the Evidence Agent never touches the document store.** The thing the architecture diagram drew as a retrieval pipeline feeding the agent simply doesn't exist in this code path. The diagram was a drawing of intent 鈥?a target architecture 鈥?not a record of the code.
+
+### What the Prompt Actually Does
+
+What I found instead was a prompt template:
+
+```python
+EVIDENCE_SYSTEM = "You are an audit evidence specialist. Match claims to evidence from provided data."
+EVIDENCE_PROMPT = """Claims to verify: {claims}
+Available data: {data}
+
+Return JSON:
+{{"evidences": [{{"claim": "exact claim text", "matched": true/false, "source": "document reference", "confidence": 0.0-1.0}}], "coverage": 0.0-1.0}}"""
+```
+
+Let me slow down on what this actually means, because it's easy to gloss over. The `{data}` placeholder is filled with a truncated financial-data string 鈥?whatever fits in the prompt. The LLM then decides, for each claim, whether it's "matched" by that data, and assigns a confidence. There is:
+
+- no retrieval (the data is whatever was passed in, not something the agent went and found)
+- no document store (nothing to query)
+- no verification against a source (the model is the only judge)
+- no page numbers, no paragraphs, no citation resolution
+
+The model is doing a semantic judgment in its head 鈥?a confident guess, formatted as evidence. The JSON schema makes it look like a verification result (`matched: true/false`, `source: "document reference"`), but the "source" field is whatever the model decides to write there. It could be "page 14 of the supplier contract" and the system would accept it 鈥?nothing checks that page 14 exists or says what the model claims.
+
+That's the moment the architecture and the code stop being two versions of the same thing and become two different things. The doc describes grounding. The code implements confidence-with-a-citation-shaped-output.
+
+Let me also be honest about my own search path, because it's the part a reviewer would want to verify. I didn't grep the whole repo first 鈥?I started with the agent file, because the diagram pointed there. When that failed, I went to the workflow, because the diagram showed orchestration above the agent. When that failed, I went back to the agent file and read it line by line. That's the actual sequence, and it matters: I trusted the diagram twice before the code overrode it. The third read 鈥?line by line, no expectations 鈥?is the one that found the hardcoded ID. Grepping from the start would have been faster, but I didn't, because I believed the diagram. That belief is exactly what this investigation is about.
+
+One more detail from the workflow worth recording, because it's the closest thing to "retrieval might be here" that exists. The evidence node in the workflow definition declares an `input_mapping` 鈥?the mechanism that maps upstream agent outputs into this node's inputs. When I saw that, I thought: this is where the chunks get passed in. But tracing it: the mapping pulls from `agent_results` (the planner's plan, the knowledge agent's standards analysis), not from any document store. The context assembled for the evidence agent contains *other agents' conclusions* 鈥?not source documents. So even at the orchestration level, the system's design assumption is "the evidence agent judges claims against what other agents concluded," not "the evidence agent grounds claims in source documents." That's a different architecture than the diagram, and it's a coherent one 鈥?until you notice the citation claims to point at a source document that was never consulted.
+
+## The Discovery
+
+Then I found the line that changed how I think about this system:
+
+```python
+citations=[Citation(claim=c.claim, document_id="evidence_source", excerpt=c.claim, confidence=c.confidence) for c in claims if c.matched]
+```
+
+`document_id="evidence_source"`. A string literal. Every matched claim gets a citation pointing at a document that doesn't exist. The "excerpt" is the claim itself 鈥?not the evidence, but the claim, echoed back.
+
+This is the moment the architecture and the code diverge in front of you. The doc describes a citation chain. The code emits a fake source ID.
+
+And here's what the discovery actually means 鈥?the distinction that matters:
+
+- **Confidence**: the model is *fairly sure* the claim is supported by the data it saw.
+- **Grounding**: the claim *resolves to a real document location* that a human can check.
+
+The agent produces the first and formats it like the second. For an audit system, that's the difference between "supported by page 14 of the supplier contract" and "supported by a string I made up." The second one fails an audit review instantly.
+
+My first assumption 鈥?that retrieval happened before the Evidence Agent 鈥?turned out to be false. I even searched the workflow hoping retrieval happened upstream. It didn't. That wrong assumption is worth naming, because it's the reason I trusted the architecture diagram in the first place: the diagram showed a pipeline, so I assumed the pipeline existed. It was a drawing of intent, not a record of code.
+
+## The Comparison: Knowledge Agent
+
+The hardcoded ID raised an immediate question: if AuditFlow already knows how to preserve page provenance somewhere, why doesn't the Evidence Agent use it?
+
+So I opened the Knowledge Agent 鈥?a different agent that answers audit-standard questions. This time I found exactly what I expected:
+
+```python
+chunks_text = "\n\n---\n\n".join(
+    f"[Page {c.get('page', '?')}] {c.get('content', '')[:800]}"
+    for c in document_chunks
+)
+```
+
+`[Page 17]`. The retrieval pipeline was already there. The page metadata survived. The page number survived. The citation survived.
+
+Everything I expected from the Evidence Agent... was in the wrong agent.
+
+The Knowledge Agent's output schema even carries `source_page`. Its citations point at real pages, because the indexing pipeline preserved page provenance end-to-end: PDF page 鈫?chunk metadata 鈫?prompt 鈫?citation.
+
+So the codebase contains both patterns side by side:
+
+- **Knowledge Agent**: chunks with page numbers, `source_page` in the schema, and a fallback path that *drops* `source_page` when there's no retrieval 鈥?the output shape honestly tells you it's in memory mode.
+- **Evidence Agent**: `document_id="evidence_source"`, the claim as its own excerpt, single-pass confidence.
+
+Same codebase. Same era. Two different answers to "where does this come from?" The Knowledge Agent proves the infrastructure exists. The Evidence Agent just doesn't use it. That's not a missing feature 鈥?that's an un-wired connection, which is a much more tractable problem.
+
+## The Papers Were Validation, Not Inspiration
+
+I didn't need the papers to discover the bug. I only used them to check whether my conclusion was already known 鈥?whether "grounding must be structural" was my finding or established fact.
+
+It's established fact. But the direction matters: the code led me to the conclusion, and the papers confirmed it. Not the other way around.
+
+Interestingly, every paper converged on the same architectural principle.
+
+- **SelfCheckGPT** approached it through *consistency* 鈥?confidence should come from multi-sample agreement, not a single pass.
+- **CoVe** approached it through *planning* 鈥?verification is a separate step where the model decides what to check before checking.
+- **CRITIC** approached it through *tools* 鈥?verify-then-correct using external search, so the check isn't circular.
+- **GopherCite** approached it through *verifiable quotations* 鈥?evidence must be a verbatim quote with a page title, penalized if unverifiable.
+
+Different methods. Same principle: grounding must be structural, not prompt-level. The papers describe the ideal; the code showed me the actual violation 鈥?a hardcoded citation ID, two modules speaking different languages. That specific failure mode is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, the fix has four concrete parts:
+
+1. **Wire the Evidence Agent to the retrieval pipeline.** It should emit evidence nodes with a real `document_no` and `source_ref`. The pipeline exists 鈥?the Knowledge Agent already uses it. This is connecting two modules, not building new infrastructure.
+
+2. **Replace single-pass confidence with consistency.** Run the claim-matching prompt twice, compare. SelfCheckGPT's insight, implemented as a cheap wrapper, not a research project.
+
+3. **Make the fallback honest.** The Knowledge Agent already has the right pattern 鈥?drop `source_page` when there's no retrieval. The Evidence Agent needs the same: if there's no real source, the output shape should say so.
+
+4. **Name the gap in the audit trail.** Even before the fix, the system should record "this citation is unverifiable." In audit, an unverifiable citation is a finding, not a bug.
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The domain code is genuinely good 鈥?and it's good in a way that reinforces the lesson.
+
+The MaterialityEngine encodes ISA 320 properly: four bases (5% of profit before tax, 0.5% of revenue, 1% of total assets, 1% of equity), a risk multiplier that halves materiality on HIGH-risk engagements, and one line that captures a century of audit practice:
+
+```python
+base_metric = min(non_zero, key=non_zero.get)  # 閫夋渶浣庡€间綔涓烘暣浣撻噸瑕佹€э紙鏈€淇濆畧鍘熷垯锛?```
+
+The minimum 鈥?because underestimating materiality is the safe direction. If you think $50K matters and it's actually $100K, you've over-tested (wasteful but safe). If you think $100K matters and it's actually $50K, you've under-tested (dangerous).
+
+The misstatement taxonomy (Known/Likely/Projected/Judgmental) is the same quality, and the Evidence Graph computes sufficiency deterministically 鈥?no LLM involved. The `CUTOFF 50% 鈫?PARTIALLY SATISFIED` demo result is arithmetic over typed evidence nodes.
+
+Why does this matter to the investigation? Because it shows the team *can* encode domain knowledge correctly. The gap isn't "they don't know how." It's "one critical seam has a fake ID in it."
+
+## Lessons Learned
+
+1. **The architecture doc and the code diverged, and only the code was honest about it.** I wrote a blog post about a citation chain that didn't exist. Grep first, document later.
+
+2. **"Evidence-driven" is a structural property, not a prompt property.** If an unsupported claim can reach the output, the system isn't evidence-driven 鈥?no matter what the prompts say. A hardcoded `document_id` is the tell.
+
+3. **Confidence and grounding are different things.** The agent produces "I'm fairly sure." An audit needs "here's the page." Formatting one like the other is how AI systems look trustworthy without being trustworthy.
+
+4. **My first assumption was wrong, and that was the most instructive part.** I assumed retrieval happened upstream because the diagram drew it. The investigation that disproved it 鈥?searching, checking the workflow, finding nothing 鈥?is what turned an opinion into a finding.
+
+5. **The best evidence that a fix is right: the codebase already contains it.** The Knowledge Agent has page-provenance citations. The Evidence Graph is deterministic. The fix is connecting modules that exist but speak different languages.
+
+## Key Takeaways
+
+- **Expect retrieval. Verify retrieval.** I searched for "retrieve", "vector", "chunk" and found none in the Evidence Agent. The diagram was a drawing of intent.
+- **A hardcoded citation ID is the canary.** `document_id="evidence_source"` means the system cannot answer the auditor's first question: *where does this come from?*
+- **The grounding layer exists 鈥?it's just not connected.** The Evidence Graph computes sufficiency deterministically; the Knowledge Agent carries page numbers. The Evidence Agent feeds them neither.
+- **The papers confirm my finding; they didn't inspire it.** The direction matters: code 鈫?conclusion 鈫?papers 鈫?validation.
+- **Naming your wrong assumption is part of the finding.** "I expected retrieval upstream" is how readers trust that you actually investigated.
+- **Read the code line by line after the grep fails.** Grepping told me what wasn't there; reading told me what actually was 鈥?a hardcoded ID pretending to be a source.
+
+## Next Investigation
+
+**Question:** AuditFlow's workflow engine 鈥?I expected a `next_action` chain, because the Evidence Agent's return value said `next_action="REVIEWER_AGENT"`. Is the orchestration really just a linear chain?
+
+**Current hypothesis:** Probably yes 鈥?one agent hands off to the next.
+
+**What I'll check:** `workflows/models.py`, `workflows/engine.py`, and whether the handover doc's "DAG + checkpoint + token budget" claims are real.
+
+**I'll report back after reading the code.**
