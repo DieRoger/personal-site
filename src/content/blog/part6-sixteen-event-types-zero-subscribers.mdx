@@ -1,0 +1,249 @@
+---
+title: "Sixteen Event Types, Zero Subscribers: The Real-Time Architecture Nobody Connected"
+description: "Code Archaeology Part 6 — The Event System That Emits Into a Void: the engine fires 16 typed events, the event contract promises append-only persistence, the WebSocket endpoint accepts connections. No listener is ever registered in production, no event is ever persisted, and the frontend never opens a socket. Every layer of a real-time architecture exists; none of them are connected."
+date: "2026-08-01"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+part: 6
+impact: high
+finding: "Sixteen typed event types fire into an empty listener list — the WebSocket endpoint has no clients, and the promised audit log is never written."
+tags: ["Code Archaeology", "Events", "WebSocket", "Real-time", "Observability", "Engineering"]
+---
+
+# Sixteen Event Types, Zero Subscribers: The Real-Time Architecture Nobody Connected
+
+*This is the sixth Code Archaeology investigation. The first found evidence declared but not grounded. The second found branching declared but not executed. The third found a subsystem declared but not wired. The fourth found a feature declared but not real. The fifth found an audit trail declared but not durable. This one is the series' endpoint: an entire real-time event architecture — sixteen typed event types, an event contract promising append-only persistence, a WebSocket endpoint, a connection manager with a broadcast method — every layer built, none of them connected. The engine emits events into a void. The frontend never opens a socket. The audit log the docstring promises is never written.*
+
+## The Hook
+
+The event contract says: "Event 不可变，Append-Only 写入 agent_execution_log" — every event is immutable and append-only into the audit log.
+
+I grepped for `to_log_entry` — the method that formats an event for that log. It has one definition and zero callers.
+
+Then I checked the real-time path. The engine has `on_event` for registering listeners — the docstring says "用于 WebSocket 推送". It has zero callers in production. The WebSocket manager has a `broadcast` method. It has zero callers anywhere. And the frontend has no WebSocket client at all.
+
+*Declared, but not connected.* That's the pattern this series keeps uncovering. This time it's the whole architecture.
+
+Let me show you how I got there.
+
+## The Expectation
+
+My previous investigation ended with a hypothesis about the event system: I suspected events were "fire-and-forget" — emitted to in-memory listeners, never persisted. That's the natural decay: the docstring promises `agent_execution_log` writes, but persistence is the hard part, so it probably didn't happen.
+
+The reality was more interesting than "not persisted." The events aren't even *consumed*. There are no listeners in production. The events fire into an empty list. The WebSocket endpoint that's supposed to deliver them to a frontend accepts connections and does nothing with them. And the frontend doesn't connect anyway.
+
+So the question became: how many layers of a real-time architecture can exist without a single one being connected?
+
+## The Investigation
+
+### Search #1: The Event Contract
+
+`domain/events.py` is a complete event system. Sixteen typed event types — `AGENT_STARTED`, `TOOL_CALLED`, `RETRIEVAL_COMPLETED`, `EVIDENCE_FOUND`, `APPROVAL_REQUIRED`, `WORKFLOW_COMPLETED`, and nine more. Each has a factory function that constructs a `WorkflowEvent` with a typed payload. There's even a `to_log_entry()` method that formats the event for storage:
+
+```python
+def to_log_entry(self) -> dict:
+    """转换为 agent_execution_log 的存储格式"""
+    return {
+        "workflow_id": self.workflow_id,
+        "agent_name": self.payload.get("agent_name", ""),
+        "event_type": self.event_type.value,
+        "payload": self.model_dump(mode="json"),
+    }
+```
+
+The docstring at the top of the file is explicit: "Event 不可变，Append-Only 写入 agent_execution_log" — the event contract *promises* append-only persistence to an audit log.
+
+**Conclusion:** The event contract is complete and specifies persistence. The question is whether anything honors it.
+
+### Search #2: Who Persists the Events?
+
+`to_log_entry` exists to format events for `agent_execution_log`. So who calls it? I grepped the entire `backend/src`:
+
+One match. The definition itself. **Zero callers.**
+
+No repository method writes a `WorkflowEvent` to any table. No `EventRepository` exists. The `agent_execution_log` table the docstring names — the one from ADR-004 we found in Part 5 — has zero code references, same as `approval_log`. The persistence layer the event contract promises is a docstring.
+
+**Conclusion:** Events are never persisted. The "Append-Only 写入 agent_execution_log" is a comment describing intent, not behavior.
+
+### Search #3: Who Consumes the Events?
+
+If events aren't persisted, maybe they're delivered in real time. The engine has the mechanism:
+
+```python
+def on_event(self, listener: callable) -> None:
+    """注册事件监听器（用于 WebSocket 推送）"""
+    self._event_listeners.append(listener)
+
+async def _emit(self, event: WorkflowEvent) -> None:
+    for listener in self._event_listeners:
+        await listener(event)
+```
+
+The docstring explicitly says listeners are "用于 WebSocket 推送" — for WebSocket push. So who registers a listener? I grepped `backend/src` for `on_event(`:
+
+One match. In the integration test (`test_workflow_5_agent.py:207`), where the test registers its own collector. **Zero production callers.**
+
+The engine fires 16 types of events at every workflow step — `_emit(event_agent_started(...))`, `_emit(event_agent_completed(...))`, `_emit(event_approval_required(...))` — into `self._event_listeners`, which in production is always an empty list. The loop body never executes.
+
+**Conclusion:** Events are emitted and immediately discarded. The listener list is always empty in production.
+
+### Search #4: The WebSocket Endpoint
+
+The WebSocket side is a complete connection manager:
+
+```python
+class ConnectionManager:
+    async def broadcast(self, workflow_id: str, event: dict):
+        """向指定 Workflow 的所有订阅者推送事件"""
+        for ws in self._connections.get(workflow_id, []):
+            await ws.send_json(event)
+
+@router.websocket("/api/v1/ws/workflows/{workflow_id}")
+async def workflow_websocket(websocket: WebSocket, workflow_id: str):
+    await manager.connect(workflow_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()   # 保持连接
+    except WebSocketDisconnect:
+        manager.disconnect(workflow_id, websocket)
+```
+
+A real WebSocket endpoint. A real connection manager. A `broadcast` method that pushes events to subscribed clients. So who calls `broadcast`?
+
+I grepped the entire repo: **zero callers.** The endpoint accepts connections and then just waits for pings. It never sends anything. The `broadcast` method — the only thing that would push a workflow event to a connected client — is never invoked.
+
+And the final layer: does the frontend even connect? I grepped `frontend/src` for `WebSocket`, `ws://`, `EventSource`:
+
+**Zero matches.** The frontend never opens a socket. There is no client for this endpoint.
+
+**Conclusion:** The WebSocket endpoint accepts connections that never come, and has no data path even if they did.
+
+## The Discovery
+
+Here's the full map of the real-time architecture, layer by layer:
+
+| Layer | What exists | What calls it |
+|---|---|---|
+| Event contract (`events.py`) | 16 typed events + `to_log_entry()` | Engine emits; `to_log_entry` has **zero callers** |
+| Persistence promise | "Append-Only 写入 agent_execution_log" (docstring) | **No repository, no table, no writes** |
+| Engine emit (`_emit`) | Fires events at every workflow step | Listens to `_event_listeners` — **always empty** |
+| Listener registration (`on_event`) | Docstring: "用于 WebSocket 推送" | **Zero production callers** (only in a test) |
+| WebSocket endpoint | `/ws/workflows/{id}` accepts connections | **Zero frontend clients** |
+| Connection manager (`broadcast`) | Pushes events to subscribers | **Zero callers anywhere** |
+
+Six layers. Every layer is built. Every layer is unconnected. The engine emits events into a void; the audit log the contract promises is never written; the WebSocket endpoint waits for clients that never connect.
+
+This is the series' most complete version of the pattern. Part 3 had a subsystem with zero callers — but at least the endpoint it was meant to serve existed. Part 5 had a persistence layer with zero callers — but the traces were at least written to memory. Here, **nothing on the consumer side exists at all**: no listener, no writer, no client. The producer is a complete event system; the consumer side is a comment.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The question isn't "why is the event system incomplete" — it's "why did so much get built with nothing on the other end?"
+
+**The event contract was specified before the consumers were.** `ISSUES.md` and the event-schema docs define all sixteen event types, the payload shapes, the persistence guarantee — a complete specification. The engine was built to emit them (that's the cheap part: a factory function per type). But the *consumers* — the WebSocket bridge, the audit-log writer, the frontend subscription — are where the real work is, and none of it shipped.
+
+**The WebSocket endpoint was built as a stub, then abandoned.** `ConnectionManager` and the endpoint exist — `connect`, `disconnect`, `broadcast` — but there's no code that ever calls `broadcast`. It's the same shape as Part 4's `load_latest`: the cheap surface (accept a connection) shipped, the expensive wiring (connect events to it) didn't.
+
+**And the test actively hides the gap.** `test_events_emitted` in the integration suite does this:
+
+```python
+async def collect(event):
+    events.append(event.event_type.value)
+
+engine = WorkflowEngine(registry)
+engine.on_event(collect)     # ← the test registers its own listener
+await engine.run(wf_id)
+assert events.count("agent_started") == 5
+```
+
+The test registers its own listener, runs the engine, and asserts the events were emitted. It proves the *engine* can emit events. It says nothing about whether anything in *production* listens. The test's collector is the only listener that ever existed — and it exists to verify the producer, while the consumer side stays invisible. This is the exact pattern from Part 5: tests give the dead path the feeling of life.
+
+Let me be honest about what this means for the product. The event system is the *observability story* — the thing that lets an audit dashboard show "the risk agent just found a high-severity anomaly" in real time, and lets a reviewer watch a workflow execute. None of that happens. The engine dutifully fires events at every step, and they vanish. The audit log the contract promises — the append-only record that would let you reconstruct what happened — is a docstring. A user watching the dashboard sees a static page, because there's no event stream behind it.
+
+**So here's the honest summary: the event system isn't broken. It's a complete producer with no consumer — sixteen event types firing into an empty list, a WebSocket endpoint with no clients, and a persistence promise with no writer. The real-time architecture is real in every layer except the one that matters: the connection.** The fix isn't "build events" — it's "connect the consumers that the contract was written for."
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the void — I needed `grep` and one read of the test. I used the knowledge base to check whether "events are only valuable if someone consumes them" was my finding or established fact. It's established fact, and for agent systems it's unusually pointed.
+
+**The literature describes the requirement; the code reveals the violation.**
+
+- **AutoGen** (2308.08155, retrieved at similarity 0.819) is the sharpest example: agents cooperate through *conversation*, and the conversation is the event stream — human observers can jump in and steer at any point. The design makes events *the* substrate: they're not a side-channel, they're the system. An event system with no consumers is AutoGen's conversation with nobody listening.
+- **MetaGPT** (2308.00352, retrieved at similarity 0.640) is the other: roles *subscribe* to messages based on their profiles — the subscription mechanism is what makes the SOP work. A role that publishes messages nobody subscribes to contributes nothing to the pipeline.
+
+Two different mechanisms, one shared principle: **an event nobody consumes is not an event — it's a log line being thrown away.** AutoGen's human-in-the-loop works because events reach a human; MetaGPT's SOP works because messages reach the right role. AuditFlow's sixteen event types reach nobody. The papers describe systems where the consumer side is first-class; my code read showed me the specific gap — a complete producer with an empty listener list. That gap is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, three concrete changes, in order of value:
+
+1. **Register a listener that writes events.** The persistence promise is the easiest to honor: `engine.on_event(writer)` where `writer` appends `event.to_log_entry()` to the audit table. The format exists (`to_log_entry`); the table is specified (ADR-004); the missing piece is one listener that persists. This is the audit-trail fix from Part 5, and it's the same one-line-class shape.
+
+2. **Bridge events to the WebSocket manager.** In the workflow router, `engine.on_event(lambda e: manager.broadcast(wf_id, e.model_dump()))` — one line connects the engine's emissions to connected clients. The `broadcast` method already exists and does the right thing; it just has no caller. This is the "real-time" part of the product, connected by registering a listener.
+
+3. **Add a frontend client.** The `/ws/workflows/{id}` endpoint waits for connections that never come. A `useWorkflowEvents(workflowId)` hook that opens the socket and dispatches events to the UI would make the dashboard live. This is the only genuinely new code — the backend pieces all exist.
+
+**Validation — the connection test.** The fix isn't real until this passes:
+
+```text
+1. Start a workflow            → engine emits events
+2. Register the writer listener → events persisted to the audit table
+3. Open a WebSocket connection → manager.broadcast delivers events to the client
+4. Assert the client received the event sequence
+```
+
+Before the fix, step 2 finds an empty audit table and step 3 finds no listener and no client. After the fix, the event architecture is connected end to end. This is the acceptance test the real-time story was always missing: **an event system isn't finished when the types are defined — it's finished when a consumer receives the events.**
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The producer side is genuinely well-designed:
+
+- **The event contract is complete and typed.** Sixteen event types with typed payloads, factory functions per type, a `WorkflowEvent` base with `event_id`/`workflow_id`/`timestamp`. This is exactly the shape you'd want for an observable agent system.
+- **The WebSocket manager is correct.** `connect`/`disconnect`/`broadcast` handle multiple subscribers per workflow and swallow per-socket errors. When wired, it will work.
+- **The engine emits faithfully.** Every workflow transition fires the right event — the producer never misses a step. The problem was never the engine's emissions; it's that nothing listens.
+
+Why does this matter? Because it shows the *design* of the event system is sound. The failure isn't understanding event-driven architecture — it's that the consumer side (persistence, WebSocket bridge, frontend) was specified and never built, and the tests verified the producer in isolation, hiding the void.
+
+## Lessons Learned
+
+1. **A producer is not a system.** Sixteen event types, a WebSocket endpoint, a connection manager, a persistence format — all built. None connected. The engine's emissions are real; the consumers are a docstring. "Events exist" and "events are delivered" are different products.
+
+2. **The test that verifies the producer hides the missing consumer.** `test_events_emitted` registers its own listener and proves the engine emits. It never checks what production listens to — because nothing does. A test that injects the missing piece is a test that documents the gap while making it look closed.
+
+3. **The docstring is the only audit log.** "Append-Only 写入 agent_execution_log" is the entire persistence layer — a comment. `to_log_entry` formats for a table that has no repository. The promise of durability is a sentence.
+
+4. **"Real-time" is a connection, not an endpoint.** The WebSocket endpoint exists; the real-time path doesn't. Accepting a connection is the cheap 10%; delivering events to it is the 90% that defines the feature.
+
+5. **The papers confirm the principle; the code found the gap.** "Events are only valuable when consumed" is established fact (AutoGen through conversation-as-substrate, MetaGPT through profile subscription). The empty listener list is my finding — code → conclusion → papers → validation, in that order.
+
+## Key Takeaways
+
+- **AuditFlow's event system emits into a void.** The engine fires 16 typed events; `_event_listeners` is always empty in production.
+- **`to_log_entry` has zero callers.** The "Append-Only 写入 agent_execution_log" promise is a docstring, not behavior — the audit log is never written.
+- **`on_event` has zero production callers.** The only listener ever registered is in a test, which hides the gap.
+- **The WebSocket endpoint has no clients.** The frontend has no WebSocket code; `manager.broadcast` is never called.
+- **Six layers, zero connections.** Contract, persistence promise, emit, listener registration, endpoint, broadcast — every layer exists, none connected.
+- **The papers validate the principle; they didn't inspire the finding.** AutoGen (0.819) and MetaGPT (0.640) confirm events need consumers. The empty listener list is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** Events are fire-and-forget — emitted to in-memory listeners, never persisted.
+- **Evidence collected:** `to_log_entry` has zero callers (grep); no event repository or `agent_execution_log` table references exist; `on_event` has zero production callers, only in `test_workflow_5_agent.py:207` where the test registers its own collector; `manager.broadcast` has zero callers (grep); `frontend/src` has zero WebSocket/EventSource matches; the engine's `_emit` iterates `_event_listeners` which is empty in production.
+- **Final conclusion:** The real-time event architecture is a complete producer with no consumer — events fire into an empty list, the promised audit log is never written, and the WebSocket endpoint waits for clients that never connect. Software doesn't ship when the types are defined; it ships when a consumer receives the events. **An event with no subscriber is not an event — it's a discarded log line.**
+- **Confidence:** High. Every claim is a direct grep or read of the code, tests, and frontend; the only unverified edge is whether some external caller outside `backend/src` registers a listener (none found in-repo or in the frontend).
+
+## Next Investigation
+
+**Question:** The engine has a `retry_policy` on `AgentNode` (`max_retries`, default 3) and a `RETRYING` state in `WorkflowState`. Part 2 found the workflow's conditional edges are never evaluated. Is the retry path real — does a failed agent actually get retried with backoff, or is the retry policy another declared-but-unexecuted feature?
+
+**Current hypothesis:** Given the pattern, retries are partially wired — the loop exists (`for attempt in range(1, max_retries + 1)`) but the retry conditions or backoff may be stubbed.
+
+**Confidence:** medium.
+
+**Evidence collected so far:** `_execute_node` has a retry loop (engine.py:110); `RETRYING` is a valid state; I haven't traced whether a failure actually triggers a re-run or just marks the workflow failed.
+
+**Open questions:** Does the retry loop distinguish retryable from non-retryable errors? Is there exponential backoff, or is a retry just an immediate re-execution? Does `fail()` with `recoverable=True` actually transition to `RETRYING`?
+
+**What I'll check:** the full `_execute_node` retry loop, the `fail()` transition, and any backoff logic.
+
+**I'll report back after reading the code.**
