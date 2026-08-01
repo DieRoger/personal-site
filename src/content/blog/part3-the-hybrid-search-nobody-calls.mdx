@@ -1,0 +1,247 @@
+---
+title: "Untitled"
+description: ""
+date: "2026-07-05"
+readingTime: "15 min read"
+source: original
+series: Code Archaeology
+tags: ["Code Archaeology", "RAG", "Hybrid Search", "BM25", "Engineering"]
+---
+
+﻿---
+title: "The README Said BM25. The Code Had Never Heard of It."
+description: "Code Archaeology Part 3 鈥?The Hybrid Search Nobody Calls: I went looking for a half-wired hybrid search and found something worse 鈥?a complete, tested, exported hybrid retrieval subsystem that nothing calls. BM25 claimed, tsvector used, CrossEncoder declared, sorting deployed."
+date: 2026-08-01
+tags: [RAG, Retrieval, Hybrid Search, BM25, RRF, Engineering, Audit, Vector Database]
+categories: [Code Archaeology, Engineering Investigation]
+slug: auditflow-hybrid-search-declared-not-wired
+draft: false
+author: Luo Runjie
+readingTime: 15 min
+difficulty: advanced
+---
+
+# The README Said BM25. The Code Had Never Heard of It.
+
+*This is the third engineering investigation in the series. The first found evidence that was declared but not grounded. The second found branching that was declared but not executed. This one is the pattern's escalation: I went to check whether hybrid search was half-wired, and found a complete, exported, unit-tested hybrid retrieval subsystem that nothing ever calls. The README claims BM25. The code doesn't have BM25. The interesting part is how thoroughly the non-BM25 version is built anyway.*
+
+## The Hook
+
+The handover doc and README both claim AuditFlow has hybrid search: "Keyword (BM25) + Vector (cosine) + RRF Reranker."
+
+The search endpoint calls exactly one retriever. It's not the hybrid one.
+
+*Declared, but not wired.* That's the pattern this series keeps uncovering.
+
+Let me show you how I got there.
+
+## The Expectation
+
+My previous investigation ended with a hypothesis: hybrid search is probably *half*-wired 鈥?vector search real, keyword branch declared. It's the natural way these things decay: the vector path is the one that was demoed, the keyword path was the one that was planned.
+
+That hypothesis was wrong in an instructive way. The keyword branch isn't declared-but-missing 鈥?it's fully implemented. So is the fusion. So is the reranker. The entire subsystem exists, is exported, and has tests. What's missing is the *wiring*: nobody calls it.
+
+So the real question became: how does a complete subsystem survive without a single caller? That's a different kind of investigation than "is the feature real?"
+
+## The Investigation
+
+### Search #1: The Search Endpoint
+
+I started where a search actually happens. `api/routers/knowledge.py` 鈥?the `/api/v1/knowledge/search` endpoint. It's short:
+
+```python
+provider = LocalEmbeddingProvider()
+vec = await provider.embed([req.query])
+
+engine = create_async_engine(db_url)
+async with engine.connect() as conn:
+    store = PGVectorStore(conn)
+    results = await store.search(vec[0], top_k=req.top_k)
+```
+
+One retriever. `PGVectorStore.search` 鈥?pure vector cosine similarity. No keyword branch, no fusion, no reranker. The endpoint's docstring says "璇箟妫€绱㈢煡璇嗗簱" (semantic search), which is honest: it does exactly what it says.
+
+**Conclusion:** The production search path is vector-only. The README's "hybrid" isn't on this code path.
+
+### Search #2: Where Is the Hybrid Code?
+
+If the endpoint doesn't use hybrid search, does the code exist at all? Yes 鈥?and this is where it gets interesting. `infrastructure/retrieval/` has three files:
+
+- `hybrid_search.py` 鈥?`HybridRetriever` with a real Reciprocal Rank Fusion implementation
+- `keyword_search.py` 鈥?`KeywordRetriever` using PostgreSQL `tsvector`
+- `vector_search.py` 鈥?`VectorRetriever`, a parallel vector implementation
+
+The RRF is genuine. Look at the fusion loop:
+
+```python
+for rank, hit in enumerate(vector_hits):
+    scores[hit.chunk_id] = scores.get(hit.chunk_id, 0) + 1.0 / (self.RRB_K + rank + 1)
+for rank, hit in enumerate(keyword_hits):
+    scores[hit.chunk_id] = scores.get(hit.chunk_id, 0) + 1.0 / (self.RRB_K + rank + 1)
+```
+
+That's textbook reciprocal rank fusion: `1 / (k + rank)` summed across both result sets, then merged by score. It even retrieves `RRB_K=60` candidates from each branch before fusing, which is the correct pattern 鈥?fuse generously, then cut.
+
+So the hybrid *algorithm* is real. `HybridRetriever` would work if anyone constructed it.
+
+**Conclusion:** The hybrid implementation exists and is correct. The question is whether anyone constructs it.
+
+### Search #3: Who Calls HybridRetriever?
+
+I grepped the entire `backend/src` for every symbol in the retrieval package: `HybridRetriever`, `VectorRetriever`, `KeywordRetriever`, `Reranker`. The results were unanimous:
+
+- `__init__.py` 鈥?exports all four classes
+- `hybrid_search.py` / `keyword_search.py` / `vector_search.py` 鈥?their own definitions
+- `tests/unit/test_retrieval.py` 鈥?imports `Reranker` and `HybridResult`
+
+That's it. No router, no service, no agent, no workflow calls them. The classes are *exported* 鈥?the package's `__init__.py` lists them in `__all__` 鈥?but exporting is not wiring. A module can be importable and completely unused.
+
+The test file is the most revealing part. It tests `Reranker`:
+
+```python
+async def test_reranker_sorts_by_score():
+    r = Reranker()
+    hits = [ScoredHit(chunk_id="a", ..., score=0.5),
+            ScoredHit(chunk_id="b", ..., score=0.9),
+            ScoredHit(chunk_id="c", ..., score=0.3)]
+    result = await r.rerank("test", hits, top_k=2)
+    assert result[0].chunk_id == "b"
+```
+
+The test passes a query string `"test"` and asserts the result is sorted by score. It never checks that the query influenced anything 鈥?because it can't: the reranker doesn't use the query. More on that in a moment.
+
+**Conclusion:** HybridRetriever, VectorRetriever, and KeywordRetriever have zero callers in production code. The subsystem is complete, exported, and tested 鈥?and un-wired.
+
+## The Discovery
+
+There are actually three claims stacked here, and they're not all the same kind of lie:
+
+### Claim 1: "BM25" 鈥?the word that doesn't exist in the code
+
+The README says "Keyword (BM25)". The keyword retriever uses PostgreSQL `tsvector`:
+
+```sql
+ts_rank(to_tsvector('simple', content), plainto_tsquery('simple', :query)) AS score
+```
+
+BM25 is a specific ranking function (Okapi BM25, the one Lucene/Solr use). `ts_rank` is PostgreSQL's own ranking. They're related in spirit 鈥?both are sparse lexical ranking 鈥?but they are not the same thing. I grepped the entire codebase for `BM25` and found zero matches. The README names an algorithm that doesn't exist anywhere in the code. The actual implementation is *fine* 鈥?`tsvector` is a legitimate choice 鈥?but it's not what's documented.
+
+### Claim 2: "CrossEncoder Reranker" 鈥?the query that's ignored
+
+The design doc (`ISSUES.md`) and the issue file both specify a CrossEncoder reranker using `sentence-transformers`. The `Reranker` class's docstring says "Cross-Encoder 閲嶆帓搴忓櫒" 鈥?but the implementation is:
+
+```python
+async def rerank(self, query: str, hits: list[ScoredHit], top_k: int = 5) -> list[ScoredHit]:  # noqa: ARG002
+    """鎸夊垎鏁伴檷搴忛噸鎺?""
+    sorted_hits = sorted(hits, key=lambda h: h.score, reverse=True)
+    return sorted_hits[:top_k]
+```
+
+Two tells. First, `# noqa: ARG002` 鈥?that's the developer telling the linter "yes, I know this argument is unused, don't complain." The `query` parameter is dead weight. Second, the body is `sorted(hits, key=score)`. That's not reranking 鈥?the scores were already computed by the retrievers. Sorting already-ranked results by their existing score is a no-op. A real CrossEncoder would recompute relevance from the `(query, document)` pair; this one reorders the list it was given. The docstring names a neural reranker; the code is `sorted()` with an apology to the linter.
+
+This is the *silent placeholder* pattern from investigation #2, one step worse: not only is the reranker not a reranker, it's marked with a lint suppression that documents the gap 鈥?but only to people who read `# noqa` comments.
+
+### Claim 3: "Hybrid" 鈥?the real implementation nobody calls
+
+This is the honest part. `HybridRetriever` is a real RRF implementation. If you wire `VectorRetriever` + `KeywordRetriever` into it, it would produce a genuine hybrid ranking. The algorithm is right, the constants are sane, the logging is there. It's not fake 鈥?it's just not connected.
+
+So the three claims are three different failure modes:
+
+| README/doc claims | Code reality | Failure mode |
+|---|---|---|
+| BM25 | `tsvector` (never mentioned anywhere) | **named but absent** |
+| CrossEncoder reranker | `sorted()` with `# noqa: ARG002` | **declared but fake** |
+| Hybrid + RRF | real `HybridRetriever`, zero callers | **implemented but un-wired** |
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The interesting question isn't "is hybrid search real" 鈥?it's "how did a correct, exported, tested subsystem end up with no callers?" So I went digging in git and the issue tracker.
+
+**Both implementations arrived in the same commit.** `git log` shows `backend/src/infrastructure/retrieval/` and `backend/src/infrastructure/vector/` were both introduced in `f575306: "feat: document pipeline and retrieval"`. Not a migration from one to the other 鈥?they were born together. From day one, there were two retrieval stacks: the complete hybrid one and the simple vector one.
+
+**The issue tracker planned the wiring.** `ISSUES.md:690` 鈥?"Issue 2.1.2 鈥?Hybrid Merge + Reranker (RRB + CrossEncoder)" 鈥?and the dependency graph (`2.2.1 depends on 2.1.2`, `3.2.2 depends on 2.1.2`) shows the hybrid work was supposed to be a prerequisite for the evidence-collection and knowledge-agent features.
+
+**But the search endpoint was written against the simple store.** `knowledge.py` imports `PGVectorStore` directly, not `HybridRetriever`. The endpoint predates or ignores the wiring the issue tracker planned.
+
+So this isn't a placeholder and it isn't a regression. It's a **parallel implementation that never converged**: two teams' worth of work (or two sessions of one person's work) both "finished" retrieval, one simple and wired, one complete and orphaned. The issue tracker describes the hybrid as a dependency of future work; the actual endpoint shipped on the simple path. Neither is wrong in isolation. Together, they mean the product runs a single-retriever search while its own documentation describes a fusion engine.
+
+The honest-placeholder contrast from investigation #2 applies here in reverse. `SubprocessSandbox` *tells* you it's a placeholder. The hybrid subsystem *doesn't* tell you it's unused 鈥?it's exported, documented, tested, and silent. The only way to know is to grep for callers. A feature with tests can still be dead code, and the tests are what make it feel alive.
+
+I'll be honest about my own conclusion here: **the hybrid retrieval subsystem isn't broken. It's a finished architecture that was never connected 鈥?and its documentation is doing the connecting.** The README describes what the system *would* do if the subsystem were wired, and the code does what the endpoint actually runs. The gap between them is the entire difference between a demo and a deployment.
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to find the dead subsystem 鈥?I needed `grep` and one careful read of the endpoint. I used the knowledge base to check whether "hybrid retrieval is worth building" was my finding or established fact. It's established fact, and the papers are unusually pointed about *why* the simple path is the tempting one to ship.
+
+**Both papers converge on one idea: dense retrieval alone misses exact matches, and that's a correctness gap, not a quality gap.**
+
+- **Precise Zero-Shot Dense Retrieval** (2212.10496, retrieved at similarity 0.760) is an example: dense retrieval struggles with exact lexical matches 鈥?identifiers, numbers, clause references 鈥?the tokens an auditor searches for by name. This is exactly the failure mode a vector-only search hides: it returns *related* chunks for "CAS14 鏀跺叆" instead of the *exact* standard.
+- **Corrective RAG (CRAG)** (2401.15884, retrieved at similarity 0.734) is the other: retrieval quality isn't guaranteed by the retriever 鈥?it needs evaluation and correction. A subsystem that's never wired can't be evaluated, which is why the gap survived: nobody measured hybrid vs vector, because hybrid was never runnable.
+
+Two different mechanisms, one shared principle: **hybrid retrieval isn't a performance optimization, it's a recall-correctness requirement for the domain.** The papers describe the ideal; my code read showed me the specific gap 鈥?a fusion engine with no input line. That gap is mine, and it's more useful than the general principle.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation, four concrete changes, in order of value:
+
+1. **Wire `HybridRetriever` into the search endpoint.** The endpoint already embeds the query and has the connection; constructing `HybridRetriever(VectorRetriever(conn), KeywordRetriever(conn))` and calling `.search()` replaces three lines of the current endpoint. The subsystem is complete 鈥?this is a connection, not a build.
+
+2. **Make the reranker either real or gone.** Either implement a true CrossEncoder (load `cross-encoder/ms-marco-MiniLM-L-6-v2`, score `(query, document)` pairs) or delete the class and the README claim. A `sorted()` pretending to be a reranker, with a lint suppression documenting its own uselessness, is worse than no reranker 鈥?it makes the pipeline look more sophisticated than it is.
+
+3. **Fix the README to match the code.** Say "Keyword (PostgreSQL tsvector)" until BM25 is implemented. The README naming an algorithm that doesn't exist is how the next engineer gets confused about what's deployed.
+
+4. **Add a wiring test.** `test_retrieval.py` tests `Reranker` in isolation but never asserts the search endpoint returns hybrid results. One test that calls the actual endpoint and asserts both branches contributed would have caught the missing wiring 鈥?and would have made the subsystem's deadness visible.
+
+## What the Good Parts Look Like (Briefly)
+
+Not everything is broken. The retrieval stack has real strengths worth preserving:
+
+- **The RRF implementation is correct.** `1/(k+rank)` fusion with `RRB_K=60` candidate expansion is exactly how you'd build it. When wired, it will work.
+- **`tsvector` is a legitimate keyword choice.** PostgreSQL's full-text search is production-grade; the sin is the README's naming, not the implementation.
+- **The chunking is honest about CJK.** `estimate_tokens` separates Chinese (~1.5 chars/token) from English (~4 chars/token) 鈥?the same distinction that bit my own LuoBlog project. The token math is right for the document corpus.
+
+Why does this matter? Because it shows the retrieval layer was built by someone who knew what they were doing. The problem isn't skill 鈥?it's that a complete subsystem and a live endpoint were never connected, and the documentation papered over the gap.
+
+## Lessons Learned
+
+1. **A feature with tests can still be dead code.** `test_reranker_sorts_by_score` passes, `HybridResult` has a model test, everything is exported. None of it runs in production. Tests prove a component works in isolation; they don't prove it's connected. This is the third time this series has found the same shape: the tests were the *confidence* that hid the gap.
+
+2. **README claims are a form of architecture.** "Keyword (BM25)" isn't documentation 鈥?it's a design decision stated as fact. When the code disagrees, one of them is wrong, and it's usually the README, because READMEs get written once and code gets changed daily. Treat README claims as hypotheses to verify, not records.
+
+3. **`# noqa: ARG002` is an honest confession.** The lint suppression on `Reranker.rerank`'s unused `query` is the developer saying "yes, I know, and I'm not fixing it." It's the silent-placeholder pattern from investigation #2, one layer deeper 鈥?a feature that documents its own fakeness in a comment most readers skip.
+
+4. **Parallel implementations are the silent killer.** Two retrieval stacks born in the same commit, one wired, one complete-but-orphaned. Nobody deleted the old one because nobody noticed there were two. The issue tracker planned the hybrid as a dependency; the endpoint shipped on the simple path. Integration is not "the feature is built" 鈥?it's "the feature is called."
+
+5. **The papers confirm the principle; the code found the gap.** "Hybrid retrieval matters for exact-match domains" is established fact (Precise Zero-Shot Dense Retrieval through lexical-match failures, CRAG through retrieval evaluation). The un-wired fusion engine is my finding 鈥?code 鈫?conclusion 鈫?papers 鈫?validation, in that order.
+
+## Key Takeaways
+
+- **AuditFlow's production search is vector-only.** The endpoint calls `PGVectorStore.search`; the hybrid subsystem in `infrastructure/retrieval/` has zero production callers.
+- **The README claims BM25; the code has `tsvector`.** The word "BM25" appears nowhere in the codebase.
+- **The reranker is `sorted()` with a lint suppression.** CrossEncoder declared, sorting deployed 鈥?`# noqa: ARG002` on an unused `query` is the tell.
+- **The RRF implementation is real 鈥?just un-wired.** The algorithm is correct; the missing line is the one that constructs `HybridRetriever`.
+- **Tests gave the dead subsystem the feeling of life.** A test for a component that's never called is a confidence generator, not a correctness proof.
+- **The papers validate the principle; they didn't inspire the finding.** Dense-only misses exact matches (0.760); retrieval needs evaluation (0.734). The un-wired fusion engine is what the code actually showed me.
+
+## Investigation Summary
+
+- **Initial hypothesis:** Hybrid search is half-wired 鈥?vector real, keyword declared (from investigation #2's pattern).
+- **Evidence collected:** The search endpoint calls only `PGVectorStore.search` (knowledge.py); `HybridRetriever`/`VectorRetriever`/`KeywordRetriever`/`Reranker` have zero callers across `backend/src` (grep); RRF fusion is correctly implemented (`hybrid_search.py`); BM25 appears nowhere in the codebase (grep); `Reranker` ignores its `query` argument (`# noqa: ARG002`); both retrieval stacks shipped in the same commit (`f575306`); `test_retrieval.py` tests `Reranker` in isolation.
+- **Final conclusion:** AuditFlow has a complete, correct, tested hybrid retrieval subsystem that nothing calls 鈥?three documentation claims (BM25, CrossEncoder, hybrid) map to three different failure modes (absent, fake, un-wired). It's finished architecture that was never connected.
+- **Confidence:** High. Every claim above is a direct grep or read of the code, git history, or the issue tracker; the only unverified edge is whether some external caller outside `backend/src` constructs these classes (none found in-repo).
+
+## Next Investigation
+
+**Question:** The workflow engine from investigation #2 has an `ApprovalDecision` with three options 鈥?`APPROVED`, `REJECTED`, `MODIFY`. My read showed `REJECTED` and `MODIFY` differ by one line (clearing `agent_results`). Does the frontend or the API layer actually render the three-way decision differently, or is the third option 鈥?the one that makes HITL real 鈥?also declared but not executed?
+
+**Current hypothesis:** Given the pattern, `MODIFY` is likely rendered as a generic "re-run" with no way to target a specific node.
+
+**Confidence:** medium.
+
+**Evidence collected so far:** `submit_decision` (engine.py) treats `REJECTED` and `MODIFY` nearly identically; `ApprovalDecision.modifications` exists in the model but I haven't traced whether anything reads it.
+
+**Open questions:** Does any frontend code distinguish the three decisions? Does `modifications` get applied anywhere, or is it another dead field?
+
+**What I'll check:** the workflow API router, any WebSocket handlers, and the frontend's approval-rendering code 鈥?and whether `modifications` is consumed by any path.
+
+**I'll report back after reading the code.**
