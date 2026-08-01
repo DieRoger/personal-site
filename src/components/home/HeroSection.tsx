@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { ArrowRight, GitBranch } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
+const FOCUS_PILLARS = ['Evidence', 'Evaluation', 'Observability', 'Human Control']
+
 export default function HeroSection() {
   return (
     <section className="relative overflow-hidden py-24 md:py-32">
@@ -18,18 +20,22 @@ export default function HeroSection() {
           <h1 className="text-5xl md:text-7xl font-bold tracking-tight mb-4">
             Runjie Luo
           </h1>
-          <p className="text-xl md:text-2xl text-muted-foreground mb-2">
-            Building AI Systems.
+          <p className="text-xl md:text-2xl font-medium mb-2">
+            Building Reliable AI Systems.
           </p>
           <p className="text-base text-muted-foreground mb-6 max-w-xl leading-relaxed">
-            Data Science Undergraduate · AI Engineer
+            I design, evaluate, and investigate AI systems with a focus on agent
+            reliability, observability, and human control.
           </p>
-          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mb-8">
-            <span className="px-2 py-0.5 rounded-md bg-secondary text-secondary-foreground">LLM</span>
-            <span className="text-muted-foreground">|</span>
-            <span className="px-2 py-0.5 rounded-md bg-secondary text-secondary-foreground">Agents</span>
-            <span className="text-muted-foreground">|</span>
-            <span className="px-2 py-0.5 rounded-md bg-secondary text-secondary-foreground">RAG</span>
+          <div className="flex flex-wrap items-center gap-2 text-sm mb-8">
+            {FOCUS_PILLARS.map((pillar, i) => (
+              <span key={pillar} className="flex items-center gap-2">
+                {i > 0 && <span className="text-muted-foreground">·</span>}
+                <span className="px-2 py-0.5 rounded-md bg-secondary text-secondary-foreground font-medium">
+                  {pillar}
+                </span>
+              </span>
+            ))}
           </div>
           <div className="flex items-center gap-4">
             <Button asChild>
@@ -38,6 +44,11 @@ export default function HeroSection() {
               </Link>
             </Button>
             <Button variant="outline" asChild>
+              <Link href="/blog">
+                Read Investigations <ArrowRight className="ml-1 h-4 w-4" />
+              </Link>
+            </Button>
+            <Button variant="ghost" asChild>
               <a href="https://github.com/DieRoger" target="_blank" rel="noopener noreferrer">
                 <GitBranch className="mr-1 h-4 w-4" /> GitHub
               </a>

@@ -46,6 +46,10 @@ export function getAllPosts(): BlogPost[] {
       readingTime: frontmatter.readingTime || readingTime(body),
       source: frontmatter.source || 'original',
       curatedUrl: frontmatter.curatedUrl,
+      series: frontmatter.series,
+      part: frontmatter.part ? Number(frontmatter.part) : undefined,
+      impact: frontmatter.impact,
+      finding: frontmatter.finding,
     } satisfies BlogPost
   })
 
@@ -68,6 +72,10 @@ export function getPostBySlug(slug: string): BlogPostWithContent | null {
     readingTime: frontmatter.readingTime || readingTime(body),
     source: frontmatter.source || 'original',
     curatedUrl: frontmatter.curatedUrl,
+    series: frontmatter.series,
+    part: frontmatter.part ? Number(frontmatter.part) : undefined,
+    impact: frontmatter.impact,
+    finding: frontmatter.finding,
     content: body,
   }
 }

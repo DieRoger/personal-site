@@ -6,7 +6,11 @@ readingTime: "15 min"
 source: original
 series: Code Archaeology
 tags: ["Code Archaeology", "Observability", "Audit", "Trace", "Engineering"]
+part: 5
+impact: critical
+finding: "PostgreSQL trace stores exist with zero callers; the audit record lives in a Python list that evaporates on restart."
 ---
+
 
 # Three Audit Trails, Zero Truth: How an AI Audit System Lost Its Own Memory
 

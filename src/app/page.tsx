@@ -1,7 +1,7 @@
 import HeroSection from '@/components/home/HeroSection'
 import FeaturedSkills from '@/components/home/FeaturedSkills'
 import FeaturedProject from '@/components/home/FeaturedProject'
-import LatestBlog from '@/components/home/LatestBlog'
+import LatestInvestigations from '@/components/home/LatestInvestigations'
 
 export default function HomePage() {
   return (
@@ -9,7 +9,7 @@ export default function HomePage() {
       <HeroSection />
       <FeaturedSkills />
       <FeaturedProject />
-      <LatestBlog />
+      <LatestInvestigations />
     </>
   )
 }
