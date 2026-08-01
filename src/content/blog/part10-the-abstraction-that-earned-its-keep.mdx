@@ -1,0 +1,238 @@
+---
+title: "I Went Looking for a Speculative Abstraction. I Found a Correct Architecture Boundary."
+description: "Code Archaeology Part 10 — The Abstraction That Earned Its Keep: after nine investigations into declared-but-unexecuted features, I went looking for one more — a single-implementation strategy ABC that looked like speculative abstraction. The evidence said otherwise: the interface lives in the domain layer with zero framework dependencies, every consumer depends on the facade, the injection point exists, and the second implementation is not a fantasy — CoVe and NLI are real, active research. This is the investigation where the pattern broke: the abstraction was right."
+date: "2026-08-03"
+readingTime: "15 min"
+source: original
+series: Code Archaeology
+part: 10
+impact: low
+finding: "A single-implementation strategy ABC turned out to be a correct dependency-inversion boundary — the series' first positive finding."
+tags: ["Code Archaeology", "Architecture", "Abstraction", "Dependency Injection", "Clean Architecture"]
+---
+
+# I Went Looking for a Speculative Abstraction. I Found a Correct Architecture Boundary.
+
+*This is the tenth Code Archaeology investigation. The first nine found the same shape over and over: a feature declared in one layer and absent in another — evidence not grounded, branching not executed, retrieval not wired, writes not durable, grounding not verified. So when I saw a `GroundingStrategy` abstraction with exactly one implementation, I expected to find the series' pattern one more time: an interface built for a future that never arrived, an abstraction with no justification. I was wrong. This is the investigation where the pattern broke. The single-implementation ABC wasn't speculative — it was the correct architecture boundary, and the evidence for why is in the dependency direction, not the implementation count.*
+
+## The Hook
+
+A strategy pattern with one implementation looks like textbook over-engineering. An ABC with a single concrete class, an interface that exists so a second implementation could someday slot in — the kind of abstraction YAGNI warns about.
+
+I went to write that article. The evidence said otherwise. The interface lives in the domain layer with zero framework dependencies. Every consumer depends on the facade, not the implementation. The injection point exists. And the "future" strategy isn't a fantasy — it's CoVe and NLI, active research that the knowledge base itself contains.
+
+*Declared, and justified.* That's the sentence this investigation ends on — the first time in the series it's not "declared, but not."
+
+Let me show you how I got there.
+
+## The Expectation
+
+The series has a pattern, and I've learned to trust it: features in this codebase tend to be declared in one layer and missing in another. So when I saw the abstraction:
+
+```python
+class GroundingStrategy(ABC):
+    @abstractmethod
+    async def verify(self, article_text: str, top_k: int = 5) -> GroundingReport:
+        ...
+```
+
+...with exactly one implementation (`SimilarityGroundingStrategy`), I expected the series' shape: an interface built for extensibility that never got a second implementation, a "declared for the future" abstraction that the future forgot.
+
+That's the natural read. Rule of Three says don't build an interface until you have three implementations. An ABC with one concrete class looks like the abstraction arrived before the need. I expected to document that.
+
+## The Investigation
+
+### Search #1: Where Does the Abstraction Live?
+
+The first question isn't "how many implementations?" — it's "where is the interface?" Because an abstraction's location tells you what it's for.
+
+`domain/grounding.py`:
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+class GroundingStrategy(ABC):
+    ...
+```
+
+Two imports. `abc` and `dataclasses`. That's the entire dependency list of the domain layer's grounding module. No FastAPI, no SQLAlchemy, no pgvector — the Clean Architecture rule, held.
+
+This is the first signal that the abstraction isn't speculative. An interface in the domain layer isn't "an abstraction for the sake of abstraction" — it's the dependency-inversion boundary. The domain defines *what* grounding means (an ABC with a `verify` contract); the service layer provides *how* (the similarity implementation).
+
+**Conclusion:** The ABC lives in the domain layer with zero framework dependencies. This is the dependency-inversion boundary, not a speculative interface.
+
+### Search #2: Who Depends on What?
+
+The second question: does any consumer depend on the concrete implementation, or on the abstraction?
+
+I traced every reference to `SimilarityGroundingStrategy`:
+
+```text
+services/grounding.py:27  class SimilarityGroundingStrategy(GroundingStrategy):
+services/grounding.py:161 self._strategy = strategy or SimilarityGroundingStrategy(...)
+services/grounding.py:172 return SimilarityGroundingStrategy._extract_claims(text)
+```
+
+Three references, all inside `grounding.py` itself. The concrete implementation is never imported by any other module. Then I traced every consumer of the checker:
+
+```text
+api/routers/agents.py:37  checker = GroundingChecker(embedder=..., chunk_repo=..., doc_repo=...)
+services/evidence.py:26   grounding_checker: GroundingChecker
+services/review.py:31     grounding_checker: "GroundingChecker | None" = None
+```
+
+Every consumer depends on `GroundingChecker` — the facade — and the facade depends on `GroundingStrategy` — the ABC. Nobody in the upper layers knows `SimilarityGroundingStrategy` exists. That's dependency inversion done right: high-level policy depends on the abstraction; the low-level detail is invisible to it.
+
+**Conclusion:** The dependency direction is correct. Upper layers depend on the facade, the facade on the ABC, and the concrete implementation is encapsulated. No consumer bypasses the abstraction.
+
+### Search #3: Is the Injection Point Real?
+
+An abstraction is only worth anything if you can actually swap the implementation. So I checked the checker's constructor:
+
+```python
+def __init__(
+    self,
+    embedder: EmbeddingService,
+    chunk_repo: ChunkRepository,
+    doc_repo: DocumentRepository,
+    strategy: GroundingStrategy | None = None,   # ← the injection point
+) -> None:
+    self._strategy = strategy or SimilarityGroundingStrategy(embedder, chunk_repo, doc_repo)
+```
+
+The `strategy` parameter exists. A caller can construct `GroundingChecker(..., strategy=NLIStrategy(...))` and the checker will use it — the `verify` method delegates to `self._strategy` regardless of which implementation it is.
+
+The injection point is real, typed to the ABC, and honored by the delegation. The abstraction isn't decorative — it's a working seam where a second implementation can slot in without touching the facade, the consumers, or the domain layer.
+
+**Conclusion:** The injection point exists and works — `strategy` is typed to the ABC and `verify` delegates through it. The abstraction is a real seam, not a dead interface.
+
+### Search #4: Is the "Future" Strategy a Fantasy?
+
+The ABC's docstring names the future: "NLIStrategy / LLMVerificationStrategy: entailment-based (future, Phase 3)." The skeptical read: that's a plan that never arrived. So I checked whether alternative verification methods are real, or a figment of the docstring.
+
+The knowledge base answered. Chain of Verification (CoVe) — retrieved at similarity 0.802 — is exactly an alternative verification strategy: instead of cosine similarity, the model verifies its own claims through a deliberate check step. Natural Language Inference is the same — entailment-based claim verification is an established research direction, not a hypothetical.
+
+So the "future strategy" the ABC was built for isn't imaginary. It's a real, active research area — the kind of thing a system like this genuinely would adopt when the similarity-based Phase 1 strategy stops being enough. The abstraction anticipated a real need, not a fabricated one.
+
+**Conclusion:** The planned alternative strategies (NLI, LLM verification) are real research — CoVe and entailment-based verification are established, retrievable from the knowledge base. The abstraction anticipated a genuine need.
+
+## The Discovery
+
+Here's the full map, layer by layer:
+
+| Layer | What it does | Dependency |
+|---|---|---|
+| Domain (`GroundingStrategy` ABC) | Defines the verification contract | `abc`, `dataclasses` — zero framework |
+| Service (`GroundingChecker` facade) | Selects & delegates | Depends on the ABC |
+| Service (`SimilarityGroundingStrategy`) | Current implementation | Implements the ABC |
+| Injection point (`strategy` param) | Allows swapping | Typed to the ABC |
+| Consumers (agents, evidence, review) | Use the checker | Depend on the facade, never the implementation |
+
+Five layers, and the dependency direction is correct at every step. The domain defines the contract; the service provides the default implementation; the injection point allows a different one; the consumers never see the concrete class. This is textbook Clean Architecture — and it's the first time in ten investigations that the code matched the architecture doc's promise.
+
+The single implementation isn't the story. The story is that the abstraction is doing its job *right now*: it's the boundary that keeps the domain pure, the consumers decoupled, and the swap point available. An interface's value isn't measured by how many implementations it has — it's measured by whether the architecture's dependencies flow through it correctly. This one does.
+
+### Why Did This Happen? (The Part That Took Longer)
+
+The interesting question isn't "is the abstraction justified" — it's "why is this the *first* correct piece of architecture in the series?"
+
+**Because the abstraction was added deliberately, not incidentally.** The `GroundingStrategy` ABC wasn't extracted after the fact — it was designed in when grounding was built (Sprint 1), with the extension point planned. It's one of the few pieces of the system where the architecture *preceded* the implementation, rather than being retrofitted around it.
+
+**And because the dependency direction was enforced.** The domain layer has zero framework imports — that's not an accident, it's a rule the codebase holds. The consumers depend on the facade — that's dependency inversion, followed. When the architecture rules are actually followed, the result is... an abstraction that works. The series found so many failures because the rules were *declared*; this one works because the rules were *enforced*.
+
+Let me be honest about what this means for the series. I came here expecting to document a speculative abstraction — the pattern's tenth instance. Instead I found the counterexample: an abstraction that earns its keep. It's a useful correction. If every investigation found the same failure, the series would be a litany, not a survey. Finding the one place the architecture holds is what makes the pattern meaningful — it proves the failures are failures of execution, not of possibility.
+
+**So here's the honest summary: the single-implementation ABC isn't speculative — it's the correct dependency-inversion boundary. The domain defines the contract with zero framework dependencies, the consumers depend on the facade, the injection point is real, and the planned second implementation (NLI/LLM verification) is established research, not a fantasy. The abstraction's value isn't that it has two implementations today — it's that the architecture's dependencies flow through it correctly, which is what makes a second implementation possible at all.** This is the first investigation in the series where the code kept its promise.
+
+## The Comparison: What the Papers Say
+
+I didn't need the papers to judge the abstraction — I needed the dependency graph and the constructor. I used the knowledge base to check whether "alternative verification strategies exist" — the premise the ABC's extensibility rests on — was my finding or established fact. It's established fact, and it's directly retrievable from the system's own knowledge base.
+
+**The literature describes the requirement; the code reveals it was anticipated.**
+
+- **Chain of Verification (CoVe)** (2309.11495, retrieved at similarity 0.802) is the direct evidence: an alternative verification method — the model checks its own claims through a deliberate verification pass. This is exactly the "LLMVerificationStrategy" the ABC's docstring names. It's not hypothetical; it's a published method with a name and an arxiv ID, sitting in the knowledge base the system uses.
+- **Faithful Chain-of-Thought** (2301.13379, retrieved at similarity 0.758) is the adjacent evidence: reasoning faithful to the model's actual computation — another strand of the same verification-and-faithfulness research program.
+
+Two papers, one conclusion: **the abstraction's planned second implementation is real research, not a placeholder.** The similarity-based strategy isn't the end of verification — it's the Phase 1 of a field that has already moved on. The ABC was built at the right time, for a real need. That's the validation the abstraction needed — and it came from the system's own knowledge base, which is a fitting end for a series about evidence.
+
+## The Fix I'd Actually Ship
+
+Based on the investigation — nothing. This is the first article in the series where the honest fix is "no change."
+
+But "nothing" deserves a verification, not a shrug. The abstraction is justified *if* the injection point is actually usable. So the concrete action is a test that proves the seam:
+
+```python
+class FakeStrategy(GroundingStrategy):
+    async def verify(self, article_text, top_k=5) -> GroundingReport:
+        return GroundingReport(total_claims=1, grounded_claims=1, evidence_coverage=1.0)
+
+checker = GroundingChecker(embedder=mock, chunk_repo=mock, doc_repo=mock, strategy=FakeStrategy())
+report = await checker.verify("anything")
+assert report.evidence_coverage == 1.0    # ← proves the injection works
+```
+
+**Validation — the seam test.** The abstraction isn't "working" just because the dependency graph looks right; it's working when a different strategy actually plugs in:
+
+```text
+1. Define a fake GroundingStrategy (returns a fixed report)
+2. Construct GroundingChecker with strategy=fake
+3. Run verify()
+4. Assert the fake's report comes back — proving the seam delegates
+```
+
+Before this test, the injection point was *believed* to work. After it, the seam is *proven* to work. This is the one line of defense the abstraction was missing: **an abstraction isn't finished when the interface exists — it's finished when a different implementation demonstrably plugs into it.**
+
+## What the Good Parts Look Like (Briefly)
+
+Everything here is a good part — which is the point. Three things stand out:
+
+- **The domain is pure.** `GroundingStrategy` imports `abc` and `dataclasses` and nothing else. The Clean Architecture rule — domain depends on no framework — is held, and it's what makes the abstraction a boundary rather than a decoration.
+- **The facade is the only door.** Consumers see `GroundingChecker`, never `SimilarityGroundingStrategy`. The encapsulation is complete — which is why the implementation can be swapped without touching a single consumer.
+- **The injection point is typed.** `strategy: GroundingStrategy | None` — the seam is honest about what it accepts: anything implementing the contract. That's a well-designed extension point.
+
+Why does this matter? Because it's the series' counterexample. After nine investigations into declared-but-unexecuted architecture, this is the piece that was designed right, enforced right, and works right. It's the proof that the failures elsewhere are failures of execution, not of the architecture's possibility.
+
+## Lessons Learned
+
+1. **An abstraction's value is in the dependency direction, not the implementation count.** Rule of Three is a heuristic, not a law. A single-implementation ABC that keeps the domain pure and the consumers decoupled is worth more than a three-implementation interface that leaks concrete classes.
+
+2. **Location decides intent.** An interface in the domain layer is a dependency-inversion boundary; an interface in the service layer is a convenience. The same ABC, placed differently, would mean something different. Where the abstraction lives is what it's for.
+
+3. **The counterexample is part of the pattern.** Nine failures don't mean everything fails. Finding the one correct piece doesn't weaken the series — it strengthens it, by proving the failures are execution gaps, not architectural impossibilities. A survey needs a control.
+
+4. **The "future" strategy was real, and the knowledge base proved it.** CoVe and NLI aren't a docstring's fantasy — they're retrievable research. Before dismissing an abstraction as speculative, check whether the need it anticipates actually exists.
+
+5. **The papers confirm the requirement; the code anticipated it.** "Alternative verification strategies exist" is established fact (CoVe through self-verification, Faithful CoT through faithful reasoning). The ABC that was built for them is what the code actually showed me — and it was right.
+
+## Key Takeaways
+
+- **The `GroundingStrategy` ABC is correct architecture, not speculative abstraction.** It lives in the domain layer with zero framework dependencies.
+- **Dependency direction is right.** Consumers depend on the facade; the facade on the ABC; the concrete implementation is encapsulated. Nobody bypasses the abstraction.
+- **The injection point is real.** `strategy: GroundingStrategy | None` is a working seam, typed to the ABC, honored by delegation.
+- **The planned second implementation is real research.** CoVe (0.802) and Faithful CoT (0.758) are retrievable from the system's own knowledge base — the "future strategy" was anticipated for a genuine need.
+- **The fix is "nothing" — plus one seam test.** The abstraction is justified; the only gap is proof that a different strategy can actually plug in.
+- **This is the series' counterexample.** The first investigation where the code kept its promise — and the proof that the failures elsewhere are execution gaps, not architectural impossibilities.
+
+## Investigation Summary
+
+- **Initial hypothesis:** The single-implementation `GroundingStrategy` ABC is speculative abstraction — the series' pattern, one more time.
+- **Evidence collected:** the ABC imports only `abc` and `dataclasses` (domain purity); every consumer depends on `GroundingChecker`, never `SimilarityGroundingStrategy` (dependency inversion); the `strategy` constructor param is typed to the ABC and `verify` delegates through it (real seam); CoVe (0.802) and Faithful CoT (0.758) are retrievable from the knowledge base (the planned NLI/LLM strategies are real research).
+- **Final conclusion:** The abstraction is the correct dependency-inversion boundary, not speculation — the domain defines the contract purely, consumers are decoupled, the injection point works, and the planned second implementation is established research. Software doesn't ship when an interface has two implementations; it ships when the dependencies flow through the abstraction correctly. **An abstraction isn't justified by its implementation count — it's justified by whether swapping the implementation is possible.**
+- **Confidence:** High. Every claim is a direct read of the dependency graph, the constructor, and the knowledge base; the one gap — proof the seam accepts a different strategy — is addressed by the proposed seam test.
+
+## Next Investigation
+
+**Question:** The series has now found nine failures and one success. The success (GroundingStrategy) was designed deliberately with the extension point planned. The failures (Part 1-9) were features declared but not executed, wired, or durable. The question for the audit trail: is there a *systematic* reason — a single architectural practice that, when followed, produces working features, and when skipped, produces the series' failures?
+
+**Current hypothesis:** The differentiator is whether the dependency direction was enforced — the successes follow Clean Architecture's dependency rule; the failures bypass it (hardcoded embedders, docstrings as persistence, empty listener lists).
+
+**Confidence:** medium.
+
+**Evidence collected so far:** the GroundingStrategy ABC enforces domain purity and inversion (this investigation); Part 7's missing commit, Part 8's hardcoded embedder, and Part 9's wrong embedder are all dependency-direction violations.
+
+**Open questions:** Is the pattern real across all nine failures, or selective? Does the codebase have a documented rule (ARCHITECTURE.md) that the successes followed and failures ignored?
+
+**What I'll check:** the codebase's architecture doc, and whether each Part 1-9 failure maps to a specific dependency-direction violation.
+
+**I'll report back after reading the code.**
