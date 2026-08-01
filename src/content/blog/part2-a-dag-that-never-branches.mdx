@@ -1,28 +1,14 @@
 ---
-title: "Untitled"
-description: ""
+title: "I Expected a next_action Chain. The Workflow Engine Had a DAG 鈥?and a Condition Nobody Evaluates."
+description: "Code Archaeology Part 2 鈥?A DAG That Never Branches: I trusted one agent's return value and wrote a wrong article. Reading workflows/models.py and engine.py revealed a real DAG, token budgets, and a conditional-edge feature that is declared, but not executed."
 date: "2026-06-27"
-readingTime: "15 min read"
+readingTime: "15 min"
 source: original
 series: Code Archaeology
-tags: ["Code Archaeology", "AI Agents", "Workflow", "DAG", "Engineering"]
 part: 2
 impact: high
 finding: "Edge.condition is defined and documented but never evaluated — the DAG executes every node unconditionally."
----
-
-
-﻿---
-title: "I Expected a next_action Chain. The Workflow Engine Had a DAG 鈥?and a Condition Nobody Evaluates."
-description: "Code Archaeology Part 2 鈥?A DAG That Never Branches: I trusted one agent's return value and wrote a wrong article. Reading workflows/models.py and engine.py revealed a real DAG, token budgets, and a conditional-edge feature that is declared, but not executed."
-date: 2026-08-01
-tags: [Agent, Workflow, DAG, LLM, Orchestration, Engineering, Audit]
-categories: [Code Archaeology, Engineering Investigation]
-slug: auditflow-workflow-engine-real-code
-draft: false
-author: Luo Runjie
-readingTime: 15 min
-difficulty: advanced
+tags: ["Code Archaeology", "AI Agents", "Workflow", "DAG", "Engineering"]
 ---
 
 # I Expected a next_action Chain. The Workflow Engine Had a DAG 鈥?and a Condition Nobody Evaluates.
