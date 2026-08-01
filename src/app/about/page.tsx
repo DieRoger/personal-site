@@ -17,12 +17,13 @@ export default function AboutPage() {
         <h1 className="text-3xl font-bold tracking-tight mb-4">About Runjie Luo</h1>
         <div className="prose prose-neutral dark:prose-invert max-w-none">
           <p className="text-lg text-muted-foreground leading-relaxed">
-            Hi, I&apos;m Runjie Luo. I am a Data Science undergraduate passionate about
-            Artificial Intelligence and Software Engineering.
+            I&apos;m Runjie Luo, a Data Science undergraduate building reliable AI systems.
           </p>
           <p className="text-muted-foreground leading-relaxed">
-            I enjoy building production-level AI systems using LLMs, Retrieval-Augmented Generation,
-            Agentic Workflows and Modern Backend Technologies.
+            While building AI applications, I realized that generating answers is only the beginning.
+            The harder question is: can we trust what the system did? I investigate how AI systems
+            fail — through agent reliability, evaluation, observability, and human-in-the-loop design —
+            and document what I find in the Code Archaeology series.
           </p>
         </div>
       </section>
@@ -47,22 +48,23 @@ export default function AboutPage() {
             <div className="border-l-2 border-border pl-4 space-y-4">
               <div>
                 <p className="font-medium">AuditFlow</p>
-                <p className="text-sm text-muted-foreground">AI-powered Document Intelligence Platform</p>
+                <p className="text-sm text-muted-foreground">AI audit intelligence — exploring reliable agent workflows</p>
               </div>
               <div>
-                <p className="font-medium">Job Hunter</p>
-                <p className="text-sm text-muted-foreground">Automated Job Search & Application Platform</p>
+                <p className="font-medium">LuoBlog Studio</p>
+                <p className="text-sm text-muted-foreground">AI-native knowledge &amp; writing workspace</p>
               </div>
               <div>
                 <p className="font-medium">Financial Analysis System</p>
-                <p className="text-sm text-muted-foreground">Automated Financial Document Analysis</p>
+                <p className="text-sm text-muted-foreground">Data-driven financial document analysis</p>
               </div>
             </div>
           </div>
           <div>
             <h3 className="text-lg font-medium mb-3">Future Goals</h3>
             <p className="text-sm text-muted-foreground">
-              Pursuing graduate studies in AI/ML to deepen research in LLM applications and multi-agent systems.
+              Pursuing graduate studies in Data Science / AI to deepen research in agent reliability,
+              AI evaluation, and building AI systems that can prove what they did.
             </p>
           </div>
         </div>
